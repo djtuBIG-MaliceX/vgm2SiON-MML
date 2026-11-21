@@ -1,4 +1,4 @@
-# vgm2sionmml
+# vgm 2 SiON MML
 
 Convert chiptune `.vgm` / `.vgz` logs into playable **SiON MML** text.
 
@@ -170,8 +170,7 @@ tests/            synthetic VGM fixtures + sample-song checks
 
 ## References
 
-* SiON MML syntax: <https://keim.github.io/SiON/mmlref/sion_mml_reference_e.html>
-* libSiON-rs: `D:/Projects/Rust/libSiON-rs`
-* libvgm VGM format: `D:/Projects/Forks/libvgm`
-* vgm2151fur register/pitch reference: `D:/Projects/Forks/vgm2151fur`
-* Example songs: `D:/Projects/Forks/SiONMML`
+* [SiON](https://github.com/keim/SiON) MML syntax: <https://keim.github.io/SiON/mmlref/sion_mml_reference_e.html>
+* GDSiON / libSiON-cpp/rs: [Godot](https://github.com/YuriSizov/gdsion), [C++](https://github.com/djtubig-MaliceX/libSiON-cpp), [Rust](https://github.com/djtubig-MaliceX/libSiON-rs)
+* libvgm: <https://github.com/valleybell/libvgm>
+* vgm2151fur: <https://github.com/me-when-the-uh/vgm2151fur>
