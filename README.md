@@ -65,7 +65,11 @@ Example output:
 ## How it works
 
 1. `vgm.py` walks the VGM/VGZ command stream and produces a flat,
-   time-stamped `ChipWrite` list (plus header clocks and loop point).
+   time-stamped `ChipWrite` list (plus header clocks). Header 0x20 is the
+   loop *length*, not its start, so the loop starts at
+   `total_samples - loop_length` (with the 0x1C offset as a fallback).
+   YM2612 PCM commands `0x8n` advance the sample clock by `n` even though
+   their PCM output is out of scope.
 2. `chips/` contains one register-state decoder per family. Each decoder
    reconstructs key-on/key-off, pitch, patch, TL/gain, pan and LFO state and
    emits a monophonic `ChannelTimeline`.
@@ -74,7 +78,8 @@ Example output:
    notes at control points into slurred (`&`) segments, encodes note lengths
    as exact sums of SiON note values, deduplicates FM voices and writes the
    MML.
-5. The loop point becomes a `$` in every track, with each loop body padded to
+5. The loop point becomes a `$` in every track. Notes crossing it are split
+   into an intro copy and a loop-body copy, and every loop body is padded to
    the same end time.
 
 ### Voice mapping

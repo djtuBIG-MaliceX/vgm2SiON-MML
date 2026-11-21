@@ -40,6 +40,10 @@ SAMPLES = {
         Path("F:/NASbackup/JamesAlan/_devspace/grbsd/ripwip/_finished/madouars/done/06 A - Fiend Empire.vgz"),
         "#OPN@",
     ),
+    "ym2608": (
+        Path("D:/Downloads/StarfireOPNA/02 Title Screen.vgz"),
+        "#OPN@",
+    ),
 }
 
 
@@ -84,6 +88,13 @@ class SampleConversionTests(unittest.TestCase):
     def test_ym2203_sample(self):
         result = self._check("ym2203")
         self.assertEqual(result.stats["ym2203_0"]["notes"], 663)
+
+    def test_ym2608_sample_loop_starts_at_intro(self):
+        result = self._check("ym2608")
+        # Header 0x20 is the loop length (3,758,643 samples); the loop starts
+        # at 4,158,189 - 3,758,643 = 399,546.
+        self.assertEqual(result.stats["loop_sample"], 399_546)
+        self.assertIn("$", result.text)
 
     def test_sn76489_sample(self):
         self._check("sn76489")

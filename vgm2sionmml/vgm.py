@@ -456,6 +456,8 @@ def load_vgm(path: Path | str) -> VgmFile:
     pos = data_offset(raw)
     n = len(raw)
     saw_dac = False
+    loop_offset = 0x1C + loop_rel if loop_rel else 0
+    loop_sample_from_offset: int | None = None
 
     def note_unsupported(name: str, count: int = 1) -> None:
         unsupported[name] = unsupported.get(name, 0) + count
@@ -464,6 +466,8 @@ def load_vgm(path: Path | str) -> VgmFile:
         writes.append(ChipWrite(sample, chip, cid, reg, val))
 
     while pos < n:
+        if loop_offset and pos == loop_offset:
+            loop_sample_from_offset = sample
         cmd = raw[pos]
         if cmd == 0x66:  # end of song
             break
@@ -498,7 +502,11 @@ def load_vgm(path: Path | str) -> VgmFile:
             pos += 12
             continue
         if 0x80 <= cmd <= 0x8F:  # YM2612 DAC data
+            # 0x8n writes one PCM byte from DAC stream 0, then waits n
+            # samples.  The sample advance matters even though the PCM
+            # output itself is out of scope.
             saw_dac = True
+            sample += cmd & 0x0F
             pos += 1
             continue
         if cmd == 0x90:
@@ -674,10 +682,17 @@ def load_vgm(path: Path | str) -> VgmFile:
 
     if total_samples == 0:
         total_samples = sample
+    # 0x20 is the *length* of the loop in samples, not its start.  The log is
+    # written through the end of the loop, so the start is total - length.
+    # Fall back to the sample position at the loop-offset command only when
+    # the header carries no usable loop length.
     loop_sample: int | None = None
-    if loop_rel and loop_samples:
-        loop_sample = loop_samples
-    if loop_sample is not None and loop_sample >= total_samples:
+    if loop_rel:
+        if 0 < loop_samples < total_samples:
+            loop_sample = total_samples - loop_samples
+        else:
+            loop_sample = loop_sample_from_offset
+    if loop_sample is not None and not 0 <= loop_sample < total_samples:
         loop_sample = None
 
     if saw_dac:

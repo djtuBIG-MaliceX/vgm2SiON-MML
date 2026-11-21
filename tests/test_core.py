@@ -18,8 +18,8 @@ class VgmParserTests(unittest.TestCase):
             commands,
             44100,
             clocks={0x30: 3579545},
-            loop_sample=735,
-            loop_offset=0x100,
+            loop_sample=44100 - 735,
+            loop_offset=0x103,
         )
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "x.vgm"
@@ -29,8 +29,22 @@ class VgmParserTests(unittest.TestCase):
         self.assertEqual(vgm.clock("ym2151"), 3579545)
         self.assertEqual(len(vgm.writes), 2)
         self.assertEqual([w.sample for w in vgm.writes], [0, 735])
+        # 0x20 is the loop *length*; the loop starts at the command addressed
+        # by 0x1C, which is the second write at sample 735.
         self.assertEqual(vgm.loop_sample, 735)
         self.assertEqual(vgm.total_samples, 44100)
+
+
+    def test_ym2612_pcm_commands_advance_sample_time(self):
+        commands = bytes((0x80, 0x81, 0x8F)) + synth.opm(0x08, 0x78)
+        data = synth.make_vgm(commands, 16, clocks={0x30: 3579545})
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "x.vgm"
+            path.write_bytes(data)
+            vgm = load_vgm(path)
+        # 0x80 waits 0, 0x81 waits 1, 0x8F waits 15 samples.
+        self.assertEqual(vgm.writes[-1].sample, 16)
+        self.assertIn("DAC/PCM", " ".join(vgm.warnings))
 
     def test_vgz_roundtrip(self):
         import gzip
