@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from vgm2sionmml.convert import convert_file
+from tests import synth
+
+DOWNLOADS = Path("D:/Downloads")
+
+SAMPLES = {
+    "opm": (DOWNLOADS / "FZ2DX" / "03 Start ~ Cholacoray [Round 1].vgz", "#OPM@"),
+    "opn": (
+        DOWNLOADS / "moreVGMs" / "Mamono Hunter Youko" / "Mamono Hunter Youko - Scene 1 - Flower Field.vgz",
+        "#OPN@",
+    ),
+    "opl3_4op": (
+        DOWNLOADS / "PhantomBreakerBattleGrounds_Shinjuku-OPL3_optimized.vgm",
+        "#OPL@",
+    ),
+    "opl3_2op": (DOWNLOADS / "moreVGMs" / "MoonDriverVGM" / "01 OPL3 Demo 001.vgz", "#OPL@"),
+    "sn76489": (
+        DOWNLOADS / "PowerStrike2GG" / "Power Strike II (GG) - 01 - Theme.vgz",
+        "%0",
+    ),
+    "ay_opn": (
+        Path("F:/NASbackup/JamesAlan/_devspace/grbsd/ripwip/_finished/madouars/done/01 Opening Concentro~.vgz"),
+        "#OPN@",
+    ),
+    "nes_ay": (
+        DOWNLOADS / "moreVGMs" / "Gimmick!_(Family_Computer)" / "03 Happy Birthday (Stage 1).vgz",
+        "%1",
+    ),
+}
+
+
+class SampleConversionTests(unittest.TestCase):
+    def _check(self, key: str):
+        path, marker = SAMPLES[key]
+        if not path.is_file():
+            self.skipTest(f"sample not present: {path}")
+        result = convert_file(path)
+        self.assertGreater(result.tracks, 0)
+        self.assertGreater(result.notes, 0)
+        self.assertIn(marker, result.text)
+        if synth.sion_play_available():
+            with tempfile.TemporaryDirectory() as td:
+                wav = synth.compile_mml(result.text, Path(td), key)
+                self.assertTrue(synth.wav_has_signal(wav))
+        return result
+
+    def test_opm_sample(self):
+        result = self._check("opm")
+        self.assertEqual(result.stats["ym2151_0"]["notes"], 2259)
+
+    def test_opn_sample(self):
+        result = self._check("opn")
+        self.assertEqual(result.stats["ym2612_0"]["notes"], 1000)
+
+    def test_opl3_four_op_sample(self):
+        result = self._check("opl3_4op")
+        self.assertEqual(result.stats["ymf262_0"]["four_op_notes"], 901)
+        self.assertGreater(result.stats["ymf262_0"]["drum_notes"], 0)
+
+    def test_opl3_two_op_sample(self):
+        result = self._check("opl3_2op")
+        self.assertEqual(result.stats["ymf262_0"]["four_op_notes"], 0)
+
+    def test_sn76489_sample(self):
+        self._check("sn76489")
+
+    def test_ay_and_opn_sample(self):
+        result = self._check("ay_opn")
+        self.assertEqual(result.stats["ym2203_0"]["notes"], 2188)
+
+    def test_nes_and_ay_sample(self):
+        self._check("nes_ay")
+        result = convert_file(SAMPLES["nes_ay"][0])
+        self.assertTrue(any("DPCM" in w for w in result.warnings))
+
+
+if __name__ == "__main__":
+    unittest.main()

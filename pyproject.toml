@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vgm2sionmml"
+version = "0.1.0"
+description = "Convert VGM/VGZ chiptune logs into SiON MML text"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "vgm2sionmml contributors"}]
+dependencies = []
+
+[project.scripts]
+vgm2sionmml = "vgm2sionmml.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vgm2sionmml*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
