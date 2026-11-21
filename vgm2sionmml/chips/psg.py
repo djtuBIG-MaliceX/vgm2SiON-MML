@@ -181,7 +181,7 @@ class _AyChip:
                 if (
                     open_note is not None
                     and abs(tone_pitch - open_note.pitch) >= 48
-                    and sample - open_note.start >= 735
+                    and sample - open_note.start >= 1470
                 ):
                     self.tone[ch].note_on(
                         sample, tone_pitch, _ay_voice_tone(), tone_gain, 4.0
@@ -199,16 +199,10 @@ class _AyChip:
                 self.noise[ch].note_off(sample)
                 self.noise_active[ch] = False
             elif noise_gate:
-                open_note = self.noise[ch].open
-                if (
-                    open_note is not None
-                    and abs(noise_pitch - open_note.pitch) >= 48
-                    and sample - open_note.start >= 735
-                ):
-                    self.noise[ch].note_on(
-                        sample, noise_pitch, _ay_voice_noise(), noise_gain, 4.0
-                    )
-                elif add_points:
+                # Noise period changes alter the LFSR rate, not the musical
+                # note.  Keep them as pitch points so a period sweep does not
+                # become a burst of zero-length retriggers.
+                if add_points:
                     self.noise[ch].pitch(sample, noise_pitch)
                     self.noise[ch].gain(sample, noise_gain)
     def advance_envelope(self, sample: int) -> None:
@@ -228,7 +222,7 @@ class _AyChip:
         reg &= 0x0F
         self.regs[reg] = val & 0xFF
         divider_write = reg in (0, 1, 2, 3, 4, 5)
-        if divider_write and self.divider_dirty and sample - self.divider_dirty_sample > 2:
+        if divider_write and self.divider_dirty and sample - self.divider_dirty_sample > 16:
             self.refresh(self.divider_dirty_sample)
             self.divider_dirty = False
         if reg == 13:
@@ -427,7 +421,11 @@ class _SnChip:
             note = self.noise_tl.open
             if note is not None and note.voice != voice:
                 self.noise_tl.note_on(sample, pitch, voice, gain, pan)
-            elif note is not None and abs(pitch - note.pitch) >= 48 and sample - note.start >= 735:
+            elif (
+                note is not None
+                and abs(pitch - note.pitch) >= 48
+                and sample - note.start >= 735
+            ):
                 self.noise_tl.note_on(sample, pitch, voice, gain, pan)
             else:
                 self.noise_tl.pitch(sample, pitch)
@@ -436,7 +434,7 @@ class _SnChip:
 
     def write_byte(self, sample: int, value: int) -> None:
         value &= 0xFF
-        if self.divider_dirty and sample - self.divider_dirty_sample > 4:
+        if self.divider_dirty and sample - self.divider_dirty_sample > 16:
             self.refresh(self.divider_dirty_sample)
             self.divider_dirty = False
         if value & 0x80:

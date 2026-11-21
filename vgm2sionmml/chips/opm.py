@@ -13,19 +13,22 @@ from dataclasses import dataclass
 from ..model import ChannelTimeline, FmVoice, LfoState, Track, VoiceLibrary
 from ..pitch import opm_kc_units
 from ..vgm import VgmFile
-from .common import ExtractResult, db_gain, sorted_writes
+from .common import ExtractResult, db_gain, normalize_carrier_levels, sorted_writes
 
-# Carrier operator sets in register order.
+# SiON's FM engine numbers operators in datasheet order OP1..OP4, while the
+# OPM register pages are OP1, OP3, OP2, OP4.  Carrier sets below are in that
+# datasheet order.
 CARRIERS = {
     0: (3,),
     1: (3,),
     2: (3,),
     3: (3,),
-    4: (2, 3),
+    4: (1, 3),
     5: (1, 2, 3),
     6: (1, 2, 3),
     7: (0, 1, 2, 3),
 }
+SLOT_FOR_LOGICAL = (0, 2, 1, 3)
 
 BURST_SAMPLES = 64
 
@@ -111,8 +114,8 @@ class OpmState:
         fb = (con >> 3) & 7
         chan_ams = self.pms_ams[ch] & 3
         ops: list[tuple[int, ...]] = []
-        for i in range(4):
-            slot = self.ops[ch][i]
+        for logical in range(4):
+            slot = self.ops[ch][SLOT_FOR_LOGICAL[logical]]
             ar = slot.ks_ar & 0x1F
             ks = (slot.ks_ar >> 6) & 3
             dr = slot.am_d1r & 0x1F
@@ -129,7 +132,10 @@ class OpmState:
 
     def carrier_tl(self, ch: int) -> int:
         alg = self.rl_fb_con[ch] & 7
-        tls = [self.ops[ch][i].tl & 0x7F for i in CARRIERS.get(alg, (3,))]
+        tls = [
+            self.ops[ch][SLOT_FOR_LOGICAL[i]].tl & 0x7F
+            for i in CARRIERS.get(alg, (3,))
+        ]
         return min(tls) if tls else 0x7F
 
     def pan_gain(self, ch: int) -> tuple[float, float]:
@@ -225,12 +231,16 @@ def extract_ym2151(
                 if mask and newly_on:
                     snap = _apply_burst(state, writes, i, ch)
                     alg, fb, ops = snap.patch(ch)
+                    ops, tl0 = normalize_carrier_levels(ops, CARRIERS.get(alg, (3,)), 5)
                     voice = FmVoice("opm", alg, fb, ops)
                     pitch = opm_kc_units(snap.kc[ch], snap.kf[ch], clock)
                     pan, pan_gain = snap.pan_gain(ch)
-                    tl0 = snap.carrier_tl(ch)
                     note = timelines[ch].note_on(
-                        sample, pitch, voice, gain=pan_gain, pan=pan
+                        sample,
+                        pitch,
+                        voice,
+                        gain=pan_gain * db_gain(tl0 * 0.75),
+                        pan=pan,
                     )
                     base_tl[ch] = tl0
                     mute[ch] = pan_gain <= 0.0
@@ -267,9 +277,9 @@ def extract_ym2151(
                     timelines[ch].pitch(sample, pitch)
             elif 0x60 <= reg <= 0x7F and sounding[ch]:
                 cur = state.carrier_tl(ch)
-                delta_db = (cur - base_tl[ch]) * 0.375
-                gain = 0.0 if mute[ch] else max(0.0, min(1.0, db_gain(delta_db)))
-                if abs(gain - (timelines[ch].open.gain if timelines[ch].open else gain)) > 0.004:
+                gain = 0.0 if mute[ch] else max(0.0, min(1.0, db_gain(cur * 0.75)))
+                note = timelines[ch].open
+                if note is None or abs(gain - note.gain) > 0.004:
                     timelines[ch].gain(sample, gain)
                     stats["tl_moves"] += 1
             elif 0x20 <= reg <= 0x27:
@@ -280,8 +290,7 @@ def extract_ym2151(
                 timelines[ch].pan(sample, pan)
                 if sounding[ch]:
                     cur = state.carrier_tl(ch)
-                    delta_db = (cur - base_tl[ch]) * 0.375
-                    gain = 0.0 if mute[ch] else max(0.0, min(1.0, db_gain(delta_db)))
+                    gain = 0.0 if mute[ch] else max(0.0, min(1.0, db_gain(cur * 0.75)))
                     timelines[ch].gain(sample, gain)
             elif 0x38 <= reg <= 0x3F or reg in (0x18, 0x19, 0x1B):
                 if sounding[ch]:

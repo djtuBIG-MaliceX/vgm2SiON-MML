@@ -97,9 +97,15 @@ class _NesChannel:
     note_start: int = 0
     pending_end: int | None = None
 
+    def module(self) -> int:
+        # SiON's NES module uses the 16-entry PSG pitch table, which folds and
+        # mistunes bass notes.  The MA3 triangle/square generator has the full
+        # pitch range, so the triangle uses it instead.
+        return 3 if self.kind == "triangle" else 1
+
     def wave(self) -> int:
         if self.kind == "triangle":
-            return 8
+            return 16
         if self.kind == "noise":
             return 10 if self.short_noise else 9
         return DUTY_WAVE.get(self.duty & 3, 4)
@@ -108,7 +114,14 @@ class _NesChannel:
         if self.kind == "noise":
             return ntsc_noise_note(self.noise_period) * 64
         if self.kind == "triangle":
-            return midi_to_units(freq_to_midi(nes_triangle_freq(self.timer, clock)))
+            midi = freq_to_midi(nes_triangle_freq(self.timer, clock))
+            # %3's triangle pitch table is accurate from C2 upward.  Fold
+            # lower notes up by octaves; the rendered pitch stays the same.
+            while midi < 24.0:
+                midi += 12.0
+            while midi > 119.0:
+                midi -= 12.0
+            return midi_to_units(midi)
         return midi_to_units(freq_to_midi(nes_pulse_freq(self.timer, clock)))
 
     def level(self) -> int:
@@ -151,7 +164,7 @@ class _NesApu:
         ch.timeline.note_on(
             sample,
             ch.pitch_units(self.clock),
-            SimpleVoice(1, ch.wave(), "NES"),
+            SimpleVoice(ch.module(), ch.wave(), "NES"),
             ch.gain(),
             4.0,
         )
@@ -291,10 +304,10 @@ class _NesApu:
                 out.append(
                     Track(
                         label=ch.timeline.label,
-                        module=1,
+                        module=ch.module(),
                         kind="nes",
                         timeline=ch.timeline,
-                        default_voice=SimpleVoice(1, ch.wave(), "NES"),
+                        default_voice=SimpleVoice(ch.module(), ch.wave(), "NES"),
                         order=order,
                     )
                 )
@@ -310,8 +323,24 @@ def extract_nes(vgm: VgmFile, voices, *, instance: int = 0, order_base: int = 0)
     clock = vgm.clock("nes", instance) or 1_789_773
     label = "NES APU" if instance == 0 else f"NES APU #{instance + 1}"
     apu = _NesApu(clock, label, order_base)
+    # Length-register writes key the channel and also carry the timer high
+    # bits.  Drivers commonly write the timer low byte, period or volume in the
+    # same sample; apply those non-key writes first so the key-on snapshot sees
+    # the intended pitch and level.
+    grouped: list[list] = []
     for w in writes:
-        apu.write(w.sample, w.reg, w.val)
+        if grouped and grouped[-1][0].sample == w.sample:
+            grouped[-1].append(w)
+        else:
+            grouped.append([w])
+    keys = (0x03, 0x07, 0x0B, 0x0F)
+    for group in grouped:
+        for w in group:
+            if w.reg not in keys:
+                apu.write(w.sample, w.reg, w.val)
+        for w in group:
+            if w.reg in keys:
+                apu.write(w.sample, w.reg, w.val)
     apu.finish(vgm.total_samples)
     result.tracks.extend(apu.tracks())
     result.stats["notes"] = sum(len(ch.timeline.notes) for ch in apu.channels)

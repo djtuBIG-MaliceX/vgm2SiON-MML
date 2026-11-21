@@ -47,3 +47,30 @@ def family_track_order(base: int, channel: int) -> int:
 
 def dedup_voice(voices: VoiceLibrary, voice):
     return voices.add(voice)
+
+
+def normalize_carrier_levels(
+    ops: tuple[tuple[int, ...], ...],
+    carriers: tuple[int, ...],
+    tl_index: int,
+) -> tuple[tuple[tuple[int, ...], ...], int]:
+    """Move the common carrier floor out of a voice and return it.
+
+    SiON's ``x`` expression carries the per-note level; the stored voice only
+    needs the relative carrier balance.  The floor is the quietest (highest
+    TL) of the loudest carrier set's values, i.e. the minimum.
+    """
+    if not carriers:
+        return ops, 0
+    floor = min(ops[i][tl_index] for i in carriers if 0 <= i < len(ops))
+    if floor <= 0:
+        return ops, 0
+    out = []
+    for i, op in enumerate(ops):
+        if i in carriers:
+            values = list(op)
+            values[tl_index] = max(0, values[tl_index] - floor)
+            out.append(tuple(values))
+        else:
+            out.append(op)
+    return tuple(out), floor

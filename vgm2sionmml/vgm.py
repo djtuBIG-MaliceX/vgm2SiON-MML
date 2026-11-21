@@ -433,16 +433,17 @@ def load_vgm(path: Path | str) -> VgmFile:
             clocks[(name, instance)] = clock
             instance += 1
 
-    # Derived SSG clocks: the AY-compatible core runs at half the FM clock.
-    for fm_name, ssg_name in (
-        ("ym2203", "ym2203_ssg"),
-        ("ym2608", "ym2608_ssg"),
-        ("ym2610", "ym2610_ssg"),
+    # Derived SSG clocks.  The YM2203's AY-compatible core runs at master/2;
+    # the YM2608 and YM2610 cores run at master/4 (verified with VGMPlay).
+    for fm_name, ssg_name, divisor in (
+        ("ym2203", "ym2203_ssg", 2),
+        ("ym2608", "ym2608_ssg", 4),
+        ("ym2610", "ym2610_ssg", 4),
     ):
         for instance in range(2):
             clock = clocks.get((fm_name, instance))
             if clock:
-                clocks[(ssg_name, instance)] = clock // 2
+                clocks[(ssg_name, instance)] = clock // divisor
 
     # Fill defaults for every clock that was used but not declared.
     for name, default in DEFAULT_CLOCKS.items():

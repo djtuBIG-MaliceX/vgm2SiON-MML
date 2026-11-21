@@ -93,11 +93,16 @@ def opm_clock_offset(clock: int) -> int:
     return int(round(768.0 * math.log2(clock / OPM_REFERENCE_CLOCK)))
 
 
-def opn_freq(block: int, fnum: int, clock: int) -> float:
-    """OPN (YM2203/2612/2608/2610) block/f-number -> Hz."""
+def opn_freq(block: int, fnum: int, clock: int, divisor: float = 144.0) -> float:
+    """OPN block/f-number -> Hz.
+
+    Verified against VGMPlay/libvgm.  The YM2612, YM2608 and YM2610 use the
+    /144 prescaler; the YM2203 uses /72, so the same block/f-number is one
+    octave higher at the same clock.
+    """
     block = max(0, min(7, int(block)))
     fnum = max(1, min(0x7FF, int(fnum)))
-    return fnum * clock / (144.0 * (2.0 ** (20 - block)))
+    return fnum * clock / (divisor * (2.0 ** (21 - block)))
 
 
 def opl_freq(block: int, fnum: int, clock: int, opl3: bool = False) -> float:
@@ -113,8 +118,8 @@ def opl_freq(block: int, fnum: int, clock: int, opl3: bool = False) -> float:
     return fnum * clock / (divisor * (2.0 ** (20 - block)))
 
 
-def opn_units(block: int, fnum: int, clock: int) -> int:
-    return midi_to_units(freq_to_midi(opn_freq(block, fnum, clock)))
+def opn_units(block: int, fnum: int, clock: int, divisor: float = 144.0) -> int:
+    return midi_to_units(freq_to_midi(opn_freq(block, fnum, clock, divisor)))
 
 
 def opl_units(block: int, fnum: int, clock: int, opl3: bool = False) -> int:

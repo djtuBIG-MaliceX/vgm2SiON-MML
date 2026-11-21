@@ -32,6 +32,14 @@ SAMPLES = {
         DOWNLOADS / "moreVGMs" / "Gimmick!_(Family_Computer)" / "03 Happy Birthday (Stage 1).vgz",
         "%1",
     ),
+    "opl2": (
+        Path("F:/NASbackup/JamesAlan/_devspace/grbsd/ripwip/_finished/angelempire2/done/16 Enemy Phase 4.vgz"),
+        "#OPL@",
+    ),
+    "ym2203": (
+        Path("F:/NASbackup/JamesAlan/_devspace/grbsd/ripwip/_finished/madouars/done/06 A - Fiend Empire.vgz"),
+        "#OPN@",
+    ),
 }
 
 
@@ -66,6 +74,16 @@ class SampleConversionTests(unittest.TestCase):
     def test_opl3_two_op_sample(self):
         result = self._check("opl3_2op")
         self.assertEqual(result.stats["ymf262_0"]["four_op_notes"], 0)
+        self.assertEqual(result.voices, 12)
+
+    def test_opl2_sample(self):
+        result = self._check("opl2")
+        self.assertEqual(result.stats["ym3812_0"]["notes"], 2518)
+        self.assertLessEqual(result.voices, 18)
+
+    def test_ym2203_sample(self):
+        result = self._check("ym2203")
+        self.assertEqual(result.stats["ym2203_0"]["notes"], 663)
 
     def test_sn76489_sample(self):
         self._check("sn76489")

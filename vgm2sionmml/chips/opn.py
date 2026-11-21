@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from ..model import ChannelTimeline, FmVoice, LfoState, Track, VoiceLibrary
 from ..pitch import opn_freq, freq_to_midi, midi_to_units
 from ..vgm import VgmFile
-from .common import ExtractResult, db_gain, sorted_writes
+from .common import ExtractResult, db_gain, normalize_carrier_levels, sorted_writes
 
 # Carrier sets in *register* order (S1, S3, S2, S4).
 OPN_CARRIERS = {
@@ -30,6 +30,17 @@ OPN_CARRIERS = {
 # Register slot -> logical datasheet operator (S1, S2, S3, S4).
 SLOT_TO_LOGICAL = (0, 2, 1, 3)
 BURST_SAMPLES = 64
+# SiON operator order (S1, S2, S3, S4) carrier sets.
+SIOPM_CARRIERS = {
+    0: (3,),
+    1: (3,),
+    2: (3,),
+    3: (3,),
+    4: (1, 3),
+    5: (1, 2, 3),
+    6: (1, 2, 3),
+    7: (0, 1, 2, 3),
+}
 LFO_RATES = (3.98, 5.56, 6.66, 7.37, 8.00, 10.0, 13.3, 16.0)
 
 
@@ -65,11 +76,13 @@ class OpnState:
     special_ch3: bool = False
     dac_enable: bool = False
     dac_data: int = 0
+    freq_divisor: float = 144.0
 
     @classmethod
-    def new(cls, channels: int) -> "OpnState":
+    def new(cls, channels: int, freq_divisor: float = 144.0) -> "OpnState":
         return cls(
             channels=channels,
+            freq_divisor=freq_divisor,
             ops=[[OpnOp() for _ in range(4)] for _ in range(channels)],
             fnum=[0] * channels,
             block=[0] * channels,
@@ -124,8 +137,9 @@ class OpnState:
             ch = ch_local + (3 if bank else 0)
             if ch >= self.channels:
                 return
-            self.fnum[ch] = (self.fnum[ch] & 0xFF) | ((val & 3) << 8)
-            self.block[ch] = (val >> 2) & 7
+            # OPN high register: bits 0-2 are FNum[10:8], bits 3-5 are Block.
+            self.fnum[ch] = (self.fnum[ch] & 0xFF) | ((val & 0x07) << 8)
+            self.block[ch] = (val >> 3) & 7
             return
         if 0xA0 <= r <= 0xA2:
             ch_local = r & 3
@@ -153,7 +167,11 @@ class OpnState:
             return
 
     def pitch_units(self, ch: int, clock: int) -> int:
-        return midi_to_units(freq_to_midi(opn_freq(self.block[ch], self.fnum[ch], clock)))
+        return midi_to_units(
+            freq_to_midi(
+                opn_freq(self.block[ch], self.fnum[ch], clock, self.freq_divisor)
+            )
+        )
 
     def carrier_tl(self, ch: int) -> int:
         alg = self.fb_alg_pan[ch] & 7
@@ -254,7 +272,7 @@ def extract_opn(
         if not writes:
             continue
         clock = vgm.clock(kind, instance)
-        state = OpnState.new(channels)
+        state = OpnState.new(channels, 72.0 if kind == "ym2203" else 144.0)
         timelines = [
             ChannelTimeline(f"{kind.upper()} {instance + 1} ch {ch + 1}")
             for ch in range(channels)
@@ -308,12 +326,18 @@ def extract_opn(
                     alg, fb, ops = snap.patch(ch)
                     if any(op.ssg_eg for op in snap.ops[ch]):
                         skipped_ssg_eg += 1
+                    ops, tl0 = normalize_carrier_levels(
+                        ops, SIOPM_CARRIERS.get(alg, (3,)), 5
+                    )
                     voice = FmVoice("opn", alg, fb, ops)
                     pitch = snap.pitch_units(ch, clock)
                     pan, pan_gain = snap.pan_gain(ch)
-                    tl0 = snap.carrier_tl(ch)
                     timelines[ch].note_on(
-                        sample, pitch, voice, gain=pan_gain, pan=pan
+                        sample,
+                        pitch,
+                        voice,
+                        gain=pan_gain * db_gain(tl0 * 0.75),
+                        pan=pan,
                     )
                     base_tl[ch] = tl0
                     mute[ch] = pan_gain <= 0.0
@@ -362,7 +386,7 @@ def extract_opn(
                     if sounding[ch]:
                         cur = state.carrier_tl(ch)
                         gain = 0.0 if mute[ch] else max(
-                            0.0, min(1.0, db_gain((cur - base_tl[ch]) * 0.375))
+                            0.0, min(1.0, db_gain(cur * 0.75))
                         )
                         timelines[ch].gain(sample, gain)
                     if r == 0xB4 and sounding[ch]:
@@ -380,7 +404,7 @@ def extract_opn(
                 if 0x40 <= r <= 0x4F and sounding[ch]:
                     cur = state.carrier_tl(ch)
                     gain = 0.0 if mute[ch] else max(
-                        0.0, min(1.0, db_gain((cur - base_tl[ch]) * 0.375))
+                        0.0, min(1.0, db_gain(cur * 0.75))
                     )
                     timelines[ch].gain(sample, gain)
                     stats["tl_moves"] += 1

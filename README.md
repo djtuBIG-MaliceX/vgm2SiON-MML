@@ -79,21 +79,28 @@ Example output:
 
 ### Voice mapping
 
-* **YM2151**: register pages map directly to `#OPM@`'s
+* **YM2151**: register pages are M1, M2, C1, C2; they are reordered to
+  SiON's datasheet operator order M1, C1, M2, C2. The `#OPM@` voice is
   `ALG, FB, (AR, DR, SR, RR, SL, TL, KS, MUL, DT1, DT2, AMS) x4`.
 * **OPN**: OPN's register slots are S1, S3, S2, S4; they are reordered to the
   S1..S4 order SiON's generic FM engine uses. TL/AR/DR/D2R/SL/RR/KS/MUL/DT1
-  carry over; SSG-EG is not representable and is reported.
+  carry over; SSG-EG is not representable and is reported. FM pitch follows
+  libvgm/VGMPlay, including the YM2203's /72 prescaler (the YM2612/YM2608/
+  YM2610 use /144). SSG clocks are master/2 on the YM2203 and master/4 on the
+  YM2608/YM2610.
 * **OPL**: OPL1/OPL2/OPL3 two-operator voices map to two-operator `#OPL@`
-  voices. OPL3's per-pair 0x104 enable bits drive 4-op voices in operator
-  order `[head op1, second op1, head op2, second op2]`. OPL rhythm mode
+  voices. OPL3's per-pair 0x104 enable bits drive 4-op voices in physical
+  chain order `[head op1, head op2, second op1, second op2]`. OPL rhythm mode
   becomes five one-shot drum tracks using the chip's rhythm operators.
+* Carrier-level floors are moved out of FM voices into `x` expression values;
+  this keeps voice identities stable and matches the source's per-note level.
 * **PSG**: tone channels use `%0@0`; noise uses `%0@1`/`%0@2`. AY envelope
   levels are simulated at the envelope step rate and written as `x`
   expression points. Game Gear stereo becomes `p` values.
-* **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle `%1@8`, noise
-  `%1@9/@10`; the hardware length counter and envelope are used for note
-  ends and volume points. DPCM is ignored.
+* **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle uses `%3@16` (MA3
+  triangle wave, full pitch range) with low notes folded up by an octave, and
+  noise uses `%1@9/@10`; the hardware length counter and envelope are used
+  for note ends and volume points. DPCM is ignored.
 
 Pitches are computed from each chip's real clock and quantized to SiON's
 1/64-semitone `k` resolution. Notes above B9 are clamped because SiON's
@@ -106,9 +113,12 @@ python -m unittest discover -s tests -v
 ```
 
 The suite covers the VGM header/loop parser, exact duration arithmetic, each
-chip's A4 pitch mapping, OPN stereo, OPL 4-op and rhythm voices, SN Game Gear
-stereo, OPL TL automation, and end-to-end compilation with the reference
-`libSiON-rs` player. Sample-song tests skip when their files are absent.
+chip's A4 pitch mapping, OPN stereo, OPM/OPN/OPL operator ordering, OPL 4-op
+and rhythm voices, OPL TL automation, NES triangle/MA3 pitch, SN Game Gear
+stereo, and end-to-end compilation with the reference `libSiON-rs` player.
+Sample-song tests skip when their files are absent. The sample expectations
+were cross-checked against libvgm/VGMPlay renders and the vgm2151fur register
+analyses.
 
 Set `SION_PLAY` to point at a `sion-play` executable if it is not at
 `D:/Projects/Rust/libSiON-rs/target/release/sion-play.exe`.

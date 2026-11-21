@@ -120,7 +120,7 @@ class ExtractorTests(unittest.TestCase):
         cmds = bytearray()
         cmds += synth.ym2612(0, 0x22, 0) + synth.ym2612(0, 0x27, 0) + synth.ym2612(0, 0x2B, 0)
         cmds += synth.ym2612(0, 0xB4, 0xC0)
-        cmds += synth.ym2612(0, 0xA0, 0x1D) + synth.ym2612(0, 0xA4, 0x12) + synth.ym2612(0, 0xB0, 0xC7)
+        cmds += synth.ym2612(0, 0xA0, 0x1D) + synth.ym2612(0, 0xA4, 0x2A) + synth.ym2612(0, 0xB0, 0xC7)
         for op in range(4):
             base = 0x30 + op * 4
             cmds += (
@@ -199,15 +199,160 @@ class ExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(note.pitch / 64.0, 69.0, delta=0.05)
 
 
+
+
+    def test_ym2608_ssg_clock_is_master_divided_by_4(self):
+        # divider 284 at 7.9872 MHz / 4 = 1.9968 MHz -> 440 Hz.
+        cmds = bytearray()
+        for reg, val in (
+            (0, 284 & 0xFF), (1, 1), (7, 0xFE), (8, 15), (9, 0), (10, 0),
+        ):
+            cmds += synth.ym2608(0, reg, val)
+        cmds += synth.wait(44100)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x48: 7987200})))
+        self.assertEqual(vgm.clock("ym2608_ssg"), 1_996_800)
+        from vgm2sionmml.model import VoiceLibrary
+        from vgm2sionmml.chips import extract_ay8910
+        result = extract_ay8910(vgm, VoiceLibrary(), chip="ym2608_ssg")
+        note = [n for t in result.tracks for n in t.timeline.notes][0]
+        self.assertAlmostEqual(note.pitch / 64.0, 69.0, delta=0.05)
+
+    def test_ym2203_a4_uses_72_divisor(self):
+        # YM2203's FM prescaler is /72, not the YM2612's /144.  Block 4 /
+        # fnum 1040 at 3.9936 MHz is A4 = 440 Hz.
+        cmds = bytearray()
+        cmds += synth.ym2203(0x22, 0) + synth.ym2203(0x27, 0)
+        cmds += synth.ym2203(0xB4, 0xC0) + synth.ym2203(0xB0, 0x07)
+        cmds += synth.ym2203(0xA4, 0x24) + synth.ym2203(0xA0, 0x10)
+        for op in range(4):
+            base = 0x30 + op * 4
+            cmds += (
+                synth.ym2203(base, 1)
+                + synth.ym2203(base + 0x10, 0)
+                + synth.ym2203(base + 0x20, 0x1F)
+                + synth.ym2203(base + 0x30, 0)
+                + synth.ym2203(base + 0x40, 0)
+                + synth.ym2203(base + 0x50, 0xF0)
+            )
+        cmds += synth.ym2203(0x28, 0xF0) + synth.wait(44100)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x44: 3993600})))
+        from vgm2sionmml.model import VoiceLibrary
+        from vgm2sionmml.chips import extract_opn
+        result = extract_opn(vgm, VoiceLibrary(), "ym2203")
+        note = [n for t in result.tracks for n in t.timeline.notes][0]
+        self.assertAlmostEqual(note.pitch / 64.0, 69.0, delta=0.05)
+
     def test_opn_stereo_and_ssg(self):
         cmds = bytearray()
         cmds += synth.ym2612(0, 0x22, 0) + synth.ym2612(0, 0xB4, 0x40)
-        cmds += synth.ym2612(0, 0xA0, 0x1D) + synth.ym2612(0, 0xA4, 0x12)
+        cmds += synth.ym2612(0, 0xA0, 0x1D) + synth.ym2612(0, 0xA4, 0x2A)
         cmds += synth.ym2612(0, 0xB0, 0xC7)
         cmds += synth.ym2612(0, 0x28, 0xF0) + synth.wait(44100) + synth.ym2612(0, 0x28, 0)
         vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x2C: 7680000})))
         note = _only_note(vgm, "opn")
         self.assertEqual(round(note.pan), 8)
+
+
+    def test_nes_triangle_uses_ma3_and_folds_low_octaves(self):
+        # NES timer 1000 -> ~111.7 Hz (A2).  The triangle moves to %3@16 so
+        # SiON's PSG pitch table cannot fold the octave.
+        timer = 1000
+        cmds = bytearray()
+        for reg, val in (
+            (0x08, 0x80), (0x0A, timer & 0xFF),
+            (0x0B, ((timer >> 8) & 7) | 0x20),
+        ):
+            cmds += synth.nes(reg, val)
+        cmds += synth.wait(44100) + synth.nes(0x08, 0x00)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x84: 1789773})))
+        from vgm2sionmml.model import VoiceLibrary
+        from vgm2sionmml.chips import extract_nes
+        result = extract_nes(vgm, VoiceLibrary())
+        tri = [t for t in result.tracks if "triangle" in t.label]
+        self.assertEqual(len(tri), 1)
+        self.assertEqual(tri[0].module, 3)
+        note = tri[0].timeline.notes[0]
+        self.assertEqual(note.voice.wave, 16)
+        self.assertGreaterEqual(note.pitch / 64.0, 24.0)
+
+    def test_opm_alg4_operator_order(self):
+        # C1/C2 (logical ops 1 and 3) are the carriers; M1/M2 are silent
+        # modulators.  The #OPM@ array must be in M1,C1,M2,C2 order.
+        cmds = bytearray()
+        cmds += synth.opm(0x20, 0xC4) + synth.opm(0x28, 0x4A)
+        for op in range(4):
+            tl = 0 if op in (2, 3) else 63
+            cmds += (
+                synth.opm(0x40 + 8 * op, 1)
+                + synth.opm(0x60 + 8 * op, tl)
+                + synth.opm(0x80 + 8 * op, 0x1F)
+                + synth.opm(0xA0 + 8 * op, 0)
+                + synth.opm(0xC0 + 8 * op, 0)
+                + synth.opm(0xE0 + 8 * op, 0xF0)
+            )
+        cmds += synth.opm(0x08, 0x78) + synth.wait(44100) + synth.opm(0x08, 0)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x30: 3579545})))
+        note = _only_note(vgm, "opm")
+        tls = [op[5] for op in note.voice.ops]
+        self.assertEqual(tls, [63, 0, 63, 0])
+
+    def test_opl4_alg2_operator_order(self):
+        cmds = bytearray()
+        cmds += synth.ymf262(1, 0x04, 1) + synth.ymf262(1, 0x05, 1)
+        for slot in (0x00, 0x03, 0x08, 0x0B):
+            tl = 0 if slot in (0x03, 0x0B) else 63
+            for reg, val in (
+                (0x20 + slot, 1), (0x40 + slot, tl), (0x60 + slot, 0xF0),
+                (0x80 + slot, 0), (0xE0 + slot, 0),
+            ):
+                cmds += synth.ymf262(0, reg, val)
+        for reg, val in ((0xA0, 0x44), (0xA3, 0x44), (0xB0, 0x32), (0xB3, 0x32)):
+            cmds += synth.ymf262(0, reg, val)
+        cmds += synth.ymf262(0, 0xC0, 0x30) + synth.ymf262(0, 0xC3, 0x31)
+        cmds += synth.wait(44100)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x5C: 14318180})))
+        note = _only_note(vgm, "opl")
+        self.assertEqual(len(note.voice.ops), 4)
+        self.assertEqual([op[6] for op in note.voice.ops], [63, 0, 63, 0])
+
+
+    def test_nes_noise_same_sample_period(self):
+        cmds = bytearray()
+        cmds += synth.nes(0x0C, 0x1F)
+        cmds += synth.nes(0x0E, 0x03)
+        cmds += synth.nes(0x0F, 0x08)
+        cmds += synth.wait(1000)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 1000, clocks={0x84: 1789773})))
+        from vgm2sionmml.model import VoiceLibrary
+        from vgm2sionmml.chips import extract_nes
+        result = extract_nes(vgm, VoiceLibrary())
+        noise = [t for t in result.tracks if "noise" in t.label]
+        self.assertEqual(len(noise), 1)
+        note = noise[0].timeline.notes[0]
+        self.assertAlmostEqual(note.pitch / 64.0, 15.0, delta=0.01)
+        self.assertEqual(note.voice.wave, 9)
+
+    def test_opl2_channel3_operator_addresses(self):
+        # Channel 3's operators sit at slots 8/0x0B.  Reading them through the
+        # channel number instead of the slot address used to duplicate op2.
+        cmds = bytearray()
+        for reg, val in (
+            (0x28, 0x01), (0x48, 0x20), (0x68, 0xF0), (0x88, 0),
+            (0x2B, 0x02), (0x4B, 0x10), (0x6B, 0xF0), (0x8B, 0),
+            (0xA3, 0x44), (0xC3, 0x00), (0xB3, 0x32),
+        ):
+            cmds += synth.ym3812(reg, val)
+        cmds += synth.wait(1000)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 1000, clocks={0x50: 3579545})))
+        from vgm2sionmml.model import VoiceLibrary
+        from vgm2sionmml.chips import extract_opl
+        result = extract_opl(vgm, VoiceLibrary(), "ym3812")
+        notes = [n for t in result.tracks for n in t.timeline.notes]
+        self.assertEqual(len(notes), 1)
+        ops = notes[0].voice.ops
+        self.assertEqual(ops[0][9], 1)   # op1 MUL
+        self.assertEqual(ops[1][9], 2)   # op2 MUL
+        self.assertNotEqual(ops[0][6], ops[1][6])
 
     def test_opl_rhythm_drums(self):
         cmds = bytearray()

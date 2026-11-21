@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from ..model import ChannelTimeline, FmVoice, Track, VoiceLibrary
 from ..pitch import freq_to_midi, midi_to_units, opl_freq
 from ..vgm import VgmFile
-from .common import ExtractResult, db_gain, sorted_writes
+from .common import ExtractResult, db_gain, normalize_carrier_levels, sorted_writes
 
 BURST_SAMPLES = 64
 # OPL operator slot addresses per channel (0-8).
@@ -50,6 +50,9 @@ SLOT_CHANNEL = {
     0x15: 8,
 }
 # Carrier operator indices for the 4-op instrument order [1,2,3,4].
+# OPL3 4-op chain order is [head op1, head op2, second op1, second op2].
+# Algorithm 0 is FM-FM, 1 AM-FM (op1+op4), 2 FM-AM (op2+op4), 3 AM-AM
+# (op1+op3+op4).  This matches libvgm's adlibemu_opl_inc.c topology.
 FOUR_CARRIERS = {0: (3,), 1: (0, 3), 2: (1, 3), 3: (0, 2, 3)}
 TWO_CARRIERS = {0: (1,), 1: (0, 1)}
 # 0xBD trigger bit -> (name, channel, single operator slot or None for BD).
@@ -213,6 +216,7 @@ class OplState:
             second = self.four_op_second(head)
             hb = self.channel_base(head)
             sb = self.channel_base(second)
+            bank_hi = hb & 0x100
             hc0 = self.regs.get(hb | 0xC0, 0)
             sc0 = self.regs.get(sb | 0xC0, 0)
             alg = (hc0 & 1) | ((sc0 & 1) << 1)
@@ -220,10 +224,10 @@ class OplState:
             h_slots = CHANNEL_SLOTS[head % 9]
             s_slots = CHANNEL_SLOTS[second % 9]
             ops = (
-                self._op_params(hb | h_slots[0]),
-                self._op_params(sb | s_slots[0]),
-                self._op_params(hb | h_slots[1]),
-                self._op_params(sb | s_slots[1]),
+                self._op_params(bank_hi | h_slots[0]),
+                self._op_params(bank_hi | h_slots[1]),
+                self._op_params(bank_hi | s_slots[0]),
+                self._op_params(bank_hi | s_slots[1]),
             )
             return alg, fb, ops
         if self.is_four_op_channel(ch):
@@ -233,13 +237,14 @@ class OplState:
             # voice; it never gets a note of its own.
             return None
         rb = self.channel_base(ch)
+        bank_hi = rb & 0x100
         c0 = self.regs.get(rb | 0xC0, 0)
         alg = c0 & 1
         fb = (c0 >> 1) & 7
         slots = CHANNEL_SLOTS[ch % 9]
         ops = (
-            self._op_params(rb | slots[0]),
-            self._op_params(rb | slots[1]),
+            self._op_params(bank_hi | slots[0]),
+            self._op_params(bank_hi | slots[1]),
         )
         return alg, fb, ops
 
@@ -253,12 +258,13 @@ class OplState:
             ops = p[2]
             return min(ops[i][6] for i in FOUR_CARRIERS.get(alg, (3,)))
         rb = self.channel_base(ch)
+        bank_hi = rb & 0x100
         c0 = self.regs.get(rb | 0xC0, 0)
         alg = c0 & 1
         slots = CHANNEL_SLOTS[ch % 9]
         ops = (
-            self._op_params(rb | slots[0]),
-            self._op_params(rb | slots[1]),
+            self._op_params(bank_hi | slots[0]),
+            self._op_params(bank_hi | slots[1]),
         )
         return min(ops[i][6] for i in TWO_CARRIERS.get(alg, (1,)))
 
@@ -373,20 +379,20 @@ def extract_opl(
                             if last_drum_sample[bit] == sample:
                                 continue
                             last_drum_sample[bit] = sample
+                            hb = state.channel_base(ch6)
+                            bank_hi = hb & 0x100
                             if slot is None:
-                                hb = state.channel_base(ch6)
                                 c0 = state.regs.get(hb | 0xC0, 0)
                                 fb = (c0 >> 1) & 7
                                 slots = CHANNEL_SLOTS[ch6 % 9]
                                 ops = (
-                                    state._op_params(hb | slots[0]),
-                                    state._op_params(hb | slots[1]),
+                                    state._op_params(bank_hi | slots[0]),
+                                    state._op_params(bank_hi | slots[1]),
                                 )
                                 voice = FmVoice("opl", 0, fb, ops)
                             else:
-                                hb = state.channel_base(ch6)
                                 voice = FmVoice(
-                                    "opl", 0, 0, (state._op_params(hb | slot),)
+                                    "opl", 0, 0, (state._op_params(bank_hi | slot),)
                                 )
                             pitch = state.pitch_units(ch6, clock)
                             pan, pan_gain = state.pan(ch6)
@@ -426,12 +432,17 @@ def extract_opl(
                     if patch is None:
                         continue
                     alg, fb, ops = patch
+                    carrier_set = FOUR_CARRIERS.get(alg, (3,)) if len(ops) == 4 else TWO_CARRIERS.get(alg, (1,))
+                    ops, tl0 = normalize_carrier_levels(ops, carrier_set, 6)
                     voice = FmVoice("opl", alg, fb, ops)
                     pitch = snap.pitch_units(ch, clock)
                     pan, pan_gain = snap.pan(ch)
-                    tl0 = snap.carrier_tl(ch)
                     timelines[ch].note_on(
-                        sample, pitch, voice, gain=pan_gain, pan=pan
+                        sample,
+                        pitch,
+                        voice,
+                        gain=pan_gain * db_gain(tl0 * 0.75),
+                        pan=pan,
                     )
                     base_tl[ch] = tl0
                     mute[ch] = pan_gain <= 0.0
@@ -473,7 +484,7 @@ def extract_opl(
                     timelines[ch].pan(sample, pan)
                     cur = state.carrier_tl(ch)
                     gain = 0.0 if mute[ch] else max(
-                        0.0, min(1.0, db_gain((cur - base_tl[ch]) * 0.75))
+                        0.0, min(1.0, db_gain(cur * 0.75))
                     )
                     timelines[ch].gain(sample, gain)
                 continue
@@ -499,7 +510,7 @@ def extract_opl(
                 if 0 <= ch < total_channels and sounding[ch]:
                     cur = state.carrier_tl(ch)
                     gain = 0.0 if mute[ch] else max(
-                        0.0, min(1.0, db_gain((cur - base_tl[ch]) * 0.75))
+                        0.0, min(1.0, db_gain(cur * 0.75))
                     )
                     timelines[ch].gain(sample, gain)
                     stats["tl_moves"] += 1
