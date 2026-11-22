@@ -177,7 +177,7 @@ def extract_huc6280(
         note = noise_timelines[v].note_on(
             sample,
             (1 + (31 - (voice.noise & 0x1F))) * 64,
-            SimpleVoice(2, 2, "PCE noise"),
+            SimpleVoice(2, 0, "PCE noise"),
             gain=gain,
             pan=pan,
             tag=f"HuC6280 noise {v + 1}",
@@ -330,7 +330,7 @@ def extract_huc6280(
                     module=2,
                     kind="psg",
                     timeline=ntl,
-                    default_voice=SimpleVoice(2, 2, "PCE noise"),
+                    default_voice=SimpleVoice(2, 0, "PCE noise"),
                     order=order_base + HUC_CHANNELS + v,
                 )
             )

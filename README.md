@@ -121,6 +121,11 @@ Example output:
   voices. OPL3's per-pair 0x104 enable bits drive 4-op voices in physical
   chain order `[head op1, head op2, second op1, second op2]`. OPL rhythm mode
   becomes five one-shot drum tracks using the chip's rhythm operators.
+  For percussive operators (ET=0), the extractor also computes the
+  attack/decay/release frames from the OPL envelope-rate tables and caps the
+  note at the point where the carrier envelope can reach silence; players
+  that do not auto-release the S phase therefore do not hold the note too
+  long.
 * **OPLL/VRC7**: a YM2413 clock word with bit 31 set selects Konami's VRC7
   preset bank and six channels; otherwise the chip uses the standard 19-entry
   OPLL bank and nine channels. Preset 0 reads the custom `$00`-`$07` patch.

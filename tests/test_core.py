@@ -489,6 +489,17 @@ class ExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(note.pitch / 64.0, 4.0, delta=0.01)
         self.assertEqual(note.voice.wave, 9)
 
+    def test_opl_non_sustaining_voice_gets_release_time(self):
+        from vgm2sionmml.chips.opl import _opl_auto_release_samples
+
+        ops = (
+            (0, 15, 15, 15, 0, 0, 0, 0, 0, 1, 0),
+            (0, 15, 15, 15, 0, 0, 0, 0, 0, 1, 0),
+        )
+        frames = _opl_auto_release_samples(0, ops, 3_579_545)
+        self.assertIsNotNone(frames)
+        self.assertLess(frames, 1000)
+
     def test_opl2_channel3_operator_addresses(self):
         # Channel 3's operators sit at slots 8/0x0B.  Reading them through the
         # channel number instead of the slot address used to duplicate op2.

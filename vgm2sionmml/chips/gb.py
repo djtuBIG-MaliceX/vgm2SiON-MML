@@ -177,7 +177,7 @@ def extract_gb(
         note = timelines[3].note_on(
             sample,
             gb_noise_note(voice.noise) * 64,
-            SimpleVoice(2, 2, "GB noise"),
+            SimpleVoice(2, 0, "GB noise"),
             gain=gain * volume / 15.0,
             pan=p,
             tag="GB noise",
@@ -359,7 +359,7 @@ def extract_gb(
             if v == 2:
                 voice = SimpleVoice(4, 0, "GB wave")
             elif v == 3:
-                voice = SimpleVoice(2, 2, "GB noise")
+                voice = SimpleVoice(2, 0, "GB noise")
             else:
                 voice = SimpleVoice(8, 4, "GB pulse")
             result.tracks.append(

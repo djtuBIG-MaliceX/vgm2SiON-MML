@@ -286,6 +286,102 @@ def _slot_operator(ch: int, low: int, op_count: int) -> int | None:
     return None
 
 
+# OPL envelope timing tables from libvgm fmopl.c.  The rate index is
+# ``16 + 4*raw_rate`` for non-zero rates; ksr adds the key-scaling offset.
+_EG_SHIFT = [0] * 16
+for _rate in range(13):
+    _EG_SHIFT.extend([12 - _rate] * 4)
+_EG_SHIFT.extend([0] * 12)  # rates 13, 14, 15
+_EG_SHIFT.extend([0] * 16)
+
+_EG_SELECT = [14 * 8] * 16
+for _rate in range(13):
+    _EG_SELECT.extend([0, 8, 16, 24])
+_EG_SELECT.extend([32, 40, 48, 56])   # rate 13
+_EG_SELECT.extend([64, 72, 80, 88])   # rate 14
+_EG_SELECT.extend([96, 96, 96, 96])   # rate 15
+_EG_SELECT.extend([96] * 16)          # dummy rates
+
+_EG_INC = [
+    0, 1, 0, 1, 0, 1, 0, 1,
+    0, 1, 0, 1, 1, 1, 0, 1,
+    0, 1, 1, 1, 0, 1, 1, 1,
+    0, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 2, 1, 1, 1, 2,
+    1, 2, 1, 2, 1, 2, 1, 2,
+    1, 2, 2, 2, 1, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 4, 2, 2, 2, 4,
+    2, 4, 2, 4, 2, 4, 2, 4,
+    2, 4, 4, 4, 2, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4,
+    8, 8, 8, 8, 8, 8, 8, 8,
+    0, 0, 0, 0, 0, 0, 0, 0,
+]
+_SL_VOLUME = [0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 496]
+
+
+def _opl_rate_index(raw: int, ksr: int) -> int:
+    if raw == 0:
+        return 0
+    return 16 + (raw << 2) + (0 if ksr else 2)
+
+
+def _opl_phase_samples(delta: int, raw_rate: int, ksr: int, clock: int) -> float | None:
+    if delta <= 0:
+        return 0.0
+    index = _opl_rate_index(raw_rate, ksr)
+    if index <= 0 or index >= len(_EG_SHIFT):
+        return None
+    shift = _EG_SHIFT[index]
+    select = _EG_SELECT[index]
+    inc = sum(_EG_INC[select : select + 8]) / 8.0
+    if inc <= 0 or not clock:
+        return None
+    updates = (delta + inc - 1.0) / inc
+    ticks = updates * (1 << shift)
+    # The EG counter advances at clock/72; one sample is one output frame.
+    return ticks * (72.0 * 44100.0 / clock)
+
+
+def _opl_auto_release_samples(alg: int, ops, clock: int) -> int | None:
+    """When ET=0 the envelope releases at the end of the S phase.
+
+    SiON's ET flag alone does not shorten a held note in every player path,
+    so return the key-on-to-silence distance for the carrier set.  This is
+    the chip's attack + decay-to-SL + RR release, expressed in output samples.
+    """
+    carriers = FOUR_CARRIERS.get(alg, (3,)) if len(ops) == 4 else TWO_CARRIERS.get(alg, (1,))
+    if not carriers:
+        return None
+    ends: list[float] = []
+    for i in carriers:
+        if i >= len(ops) or ops[i][4] != 0:
+            return None
+        op = ops[i]
+        ar, dr, rr, sl = op[1], op[2], op[3], op[5]
+        ksr = op[7]
+        attack = _opl_phase_samples(511, ar, ksr, clock)
+        decay = _opl_phase_samples(_SL_VOLUME[sl], dr, ksr, clock)
+        release = _opl_phase_samples(511 - _SL_VOLUME[sl], rr, ksr, clock)
+        if attack is None or decay is None or release is None:
+            return None
+        ends.append(attack + decay + release)
+    if not ends:
+        return None
+    return max(1, int(round(max(ends))))
+
+
+def _apply_opl_auto_release(note, alg: int, ops, clock: int, start: int) -> None:
+    frames = _opl_auto_release_samples(alg, ops, clock)
+    if frames is None:
+        return
+    end = start + frames
+    if note.end is None or end < note.end:
+        note.end = end
+
+
 def _opl_voice(alg: int, fb: int, ops) -> tuple[FmVoice, int, tuple[tuple[int, int], ...]]:
     """Build a TL-normalized OPL voice and its per-note operator overrides.
 
@@ -469,6 +565,9 @@ def extract_opl(
                                     pan=pan,
                                 )
                                 note.op_tl = op_tl
+                                _apply_opl_auto_release(
+                                    note, alg, ops, clock, sample
+                                )
                                 base_tl[ch6] = tl0
                                 mute[ch6] = pan_gain <= 0.0
                                 open_window[ch6] = sample + BURST_SAMPLES
@@ -485,6 +584,9 @@ def extract_opl(
                                 )
                                 active_drums[ch6].append(note)
                             note.end = sample + duration
+                            _apply_opl_auto_release(
+                                note, 0, voice.ops, clock, sample
+                            )
                             stats["drum_notes"] = stats.get("drum_notes", 0) + 1
                 continue
             if opl3 and bank == 1 and r == 0x04:
@@ -528,6 +630,9 @@ def extract_opl(
                         pan=pan,
                     )
                     note.op_tl = op_tl
+                    _apply_opl_auto_release(
+                        note, alg, ops, clock, sample
+                    )
                     base_tl[ch] = tl0
                     mute[ch] = pan_gain <= 0.0
                     sounding[ch] = True

@@ -412,7 +412,7 @@ class _SnChip:
         left = bool(mask & 0x08)
         right = bool(mask & 0x80)
         pan = 4.0 if (left and right) else (0.0 if left else (8.0 if right else 4.0))
-        voice = SimpleVoice(0, 2 if (self.channels[3].noise_mode & 4) == 0 else 1,
+        voice = SimpleVoice(0, 1 if self.channels[3].noise_mode & 4 else 2,
                             "SN noise")
         pitch = sn_noise_note(self.channels[3].noise & 7) * 64
         if gain > 0.0 and not self.noise_active:
