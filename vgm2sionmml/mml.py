@@ -14,6 +14,7 @@ from .model import (
     Track,
 )
 from .pitch import units_to_note_k
+from .optimize import optimize_tracks
 
 TICKS_PER_WHOLE = 1920
 MAX_LINE = 108
@@ -82,11 +83,16 @@ class RenderStats:
     rests: int = 0
     loop_split: int = 0
     clamped: int = 0
+    original_chars: int = 0
+    optimized_chars: int = 0
+    macros: int = 0
+    loops: int = 0
 
 
 class MmlRenderer:
-    def __init__(self, song: Song) -> None:
+    def __init__(self, song: Song, optimize: bool = True) -> None:
         self.song = song
+        self.optimize = optimize
         self.stats = RenderStats()
 
     # ------------------------------------------------------------------ header
@@ -100,6 +106,12 @@ class MmlRenderer:
         if not title:
             title = self.song.title
         return f"#TITLE{{{title}}};"
+
+    def _wavetable_headers(self) -> list[str]:
+        return [
+            table.mml(index)
+            for index, table in enumerate(self.song.waves.tables)
+        ]
 
     def _voice_headers(self) -> list[str]:
         blocks: list[str] = []
@@ -118,25 +130,53 @@ class MmlRenderer:
                 if isinstance(note.voice, FmVoice):
                     self.song.voices.add(note.voice)
         parts: list[str] = [self._title(), ""]
+        wavetables = self._wavetable_headers()
+        if wavetables:
+            parts.extend(wavetables)
+            parts.append("")
         voices = self._voice_headers()
         if voices:
             parts.extend(voices)
             parts.append("")
+        rendered: list[tuple[Track, list[str]]] = []
         first = True
         for track in self.song.tracks_in_order():
-            body = self._render_track(track, include_tempo=first)
-            if body is None:
+            tokens = self._render_track_tokens(track, include_tempo=first)
+            if tokens is None:
                 continue
             first = False
-            parts.append(f"// {track.label}")
-            parts.append(body)
+            rendered.append((track, tokens))
+        macros: list[tuple[str, list[str]]] = []
+        if rendered:
+            if self.optimize:
+                tracks_only = [tokens for _track, tokens in rendered]
+                optimized, macros, opt_stats = optimize_tracks(tracks_only)
+                rendered = [
+                    (track, tokens) for (track, _old), tokens in zip(rendered, optimized)
+                ]
+                self.stats.original_chars = opt_stats.original_chars
+                self.stats.optimized_chars = opt_stats.optimized_chars
+                self.stats.macros = opt_stats.macros
+                self.stats.loops = opt_stats.loops
+            else:
+                self.stats.original_chars = sum(
+                    len(token) for _track, tokens in rendered for token in tokens
+                )
+                self.stats.optimized_chars = self.stats.original_chars
+        if macros:
+            for name, body in macros:
+                parts.append(f"#{name}=" + " ".join(body) + ";")
             parts.append("")
-        if first:
+        for track, tokens in rendered:
+            parts.append(f"// {track.label}")
+            parts.append(self._wrap(tokens))
+            parts.append("")
+        if not rendered:
             # No playable tracks; keep a syntactically valid empty sequence.
             parts.append("%0 v0 q8 r1;")
         return "\n".join(parts).rstrip() + "\n"
 
-    def _render_track(self, track: Track, include_tempo: bool) -> str | None:
+    def _render_track_tokens(self, track: Track, include_tempo: bool) -> list[str] | None:
         notes = track.sorted_notes()
         if not notes:
             return None
@@ -175,7 +215,7 @@ class MmlRenderer:
                 if end_tick > cursor:
                     tokens.append("r" + duration_token(end_tick - cursor))
                     self.stats.rests += 1
-            return self._wrap(tokens)
+            return tokens
 
         self._emit_notes(track, pre, 0, state, tokens)
         if loop_tick is not None:
@@ -200,7 +240,7 @@ class MmlRenderer:
                 # Keep a little tail so every track reaches the song's end.
                 tokens.append("r" + duration_token(end_tick - cursor))
                 self.stats.rests += 1
-        return self._wrap(tokens)
+        return tokens
 
     def _track_init(self, track: Track, include_tempo: bool) -> list[str]:
         tokens = [f"%{track.module}"]
@@ -232,6 +272,9 @@ class MmlRenderer:
                     pitch_points=[p for p in note.pitch_points if p[0] < loop_sample],
                     gain_points=[p for p in note.gain_points if p[0] < loop_sample],
                     pan_points=[p for p in note.pan_points if p[0] < loop_sample],
+                    wave_points=[p for p in note.wave_points if p[0] < loop_sample],
+                    op_tl=note.op_tl,
+                    op_tl_points=[p for p in note.op_tl_points if p[0] < loop_sample],
                     tag=note.tag,
                 )
                 post = Note(
@@ -244,8 +287,27 @@ class MmlRenderer:
                     pitch_points=[p for p in note.pitch_points if p[0] > loop_sample],
                     gain_points=[p for p in note.gain_points if p[0] > loop_sample],
                     pan_points=[p for p in note.pan_points if p[0] > loop_sample],
+                    wave_points=[p for p in note.wave_points if p[0] > loop_sample],
+                    op_tl=tuple(
+                        (op, v) for op, v in note.op_tl
+                    ),
+                    op_tl_points=[p for p in note.op_tl_points if p[0] > loop_sample],
                     tag=note.tag,
                 )
+                if isinstance(post.voice, SimpleVoice):
+                    wave = note.voice.wave if isinstance(note.voice, SimpleVoice) else 0
+                    for t, value in note.wave_points:
+                        if t <= loop_sample:
+                            wave = value
+                    post.voice = SimpleVoice(
+                        post.voice.module, wave, post.voice.name
+                    )
+                if post.op_tl:
+                    levels = dict(note.op_tl)
+                    for t, operator, value in note.op_tl_points:
+                        if t <= loop_sample:
+                            levels[operator] = value
+                    post.op_tl = tuple(sorted(levels.items()))
                 out.extend((intro, post))
                 changed = True
                 self.stats.loop_split += 1
@@ -322,6 +384,16 @@ class MmlRenderer:
                 tick = ticks_from_samples(t, bpm)
                 if start < tick < end:
                     points.append((tick, "pan", value))
+        for t, value in note.wave_points:
+            if note.start < t < (note.end if note.end is not None else self.song.total_samples):
+                tick = ticks_from_samples(t, bpm)
+                if start < tick < end:
+                    points.append((tick, "wave", value))
+        for t, operator, value in note.op_tl_points:
+            if note.start < t < (note.end if note.end is not None else self.song.total_samples):
+                tick = ticks_from_samples(t, bpm)
+                if start < tick < end:
+                    points.append((tick, "optl", (operator, value)))
         points.sort(key=lambda item: item[0])
 
         # Merge same-tick points; keep a deterministic order.
@@ -343,6 +415,8 @@ class MmlRenderer:
         current_pitch = note.pitch
         current_gain = note.gain
         current_pan = note.pan
+        current_op_tl = dict(note.op_tl)
+        current_wave = None
         first_segment = True
         for index, (tick, changes) in enumerate(boundaries[:-1]):
             next_tick = boundaries[index + 1][0]
@@ -356,15 +430,30 @@ class MmlRenderer:
                     current_gain = float(value)
                 elif kind == "pan":
                     current_pan = float(value)
+                elif kind == "wave":
+                    current_wave = int(value)
+                elif kind == "optl":
+                    operator, level = value
+                    current_op_tl[int(operator)] = int(level)
 
             if first_segment:
                 self._emit_voice(track, note, state, tokens)
+                self._emit_operator_levels(
+                    note.op_tl, state, tokens, initialize=True
+                )
                 self._emit_lfo(track, note.start, state, tokens)
                 self._emit_gain(current_gain, state, tokens)
                 self._emit_pan(current_pan, state, tokens)
             else:
                 if not tokens or tokens[-1] != "&":
                     tokens.append("&")
+                self._emit_operator_levels(
+                    tuple(current_op_tl.items()), state, tokens,
+                    initialize=False,
+                    only=[value[0] for kind, value in changes if kind == "optl"],
+                )
+                if current_wave is not None:
+                    self._emit_wave(current_wave, state, tokens)
                 self._emit_gain(current_gain, state, tokens)
                 self._emit_pan(current_pan, state, tokens)
                 self.stats.tied_segments += 1
@@ -395,6 +484,33 @@ class MmlRenderer:
         if token != state.module_voice:
             tokens.append(token)
             state.module_voice = token
+            state.op_tl.clear()
+
+    def _emit_operator_levels(
+        self,
+        levels,
+        state: "_TrackState",
+        tokens: list[str],
+        *,
+        initialize: bool,
+        only=None,
+    ) -> None:
+        allowed = None if only is None else set(only)
+        for operator, value in levels:
+            if allowed is not None and operator not in allowed:
+                continue
+            key = (operator, value)
+            if state.op_tl.get(operator) == value:
+                continue
+            tokens.append(f"i{operator}@tl{value}")
+            state.op_tl[operator] = value
+
+    def _emit_wave(self, index: int, state: "_TrackState", tokens: list[str]) -> None:
+        token = f"@{index}"
+        if token != state.module_voice:
+            tokens.append(token)
+            state.module_voice = token
+            state.op_tl.clear()
 
     def _emit_lfo(
         self, track: Track, sample: int, state: "_TrackState", tokens: list[str]
@@ -487,6 +603,7 @@ class _TrackState:
         "lfo_pitch",
         "lfo_amp",
         "lfo_active",
+        "op_tl",
         "cursor",
     )
 
@@ -500,6 +617,7 @@ class _TrackState:
         self.lfo_pitch = 0
         self.lfo_amp = 0
         self.lfo_active = False
+        self.op_tl: dict[int, int] = {}
         self.cursor = 0
 
 

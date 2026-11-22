@@ -3,8 +3,9 @@
 Convert chiptune `.vgm` / `.vgz` logs into playable **SiON MML** text.
 
 The converter reads the chip register stream, reconstructs notes, patches,
-pitch, volume and stereo, then writes SiON's MML dialect with real FM voice
-definitions (`#OPM@`, `#OPN@`, `#OPL@`) and PSG/NES tracks (`%0`, `%1`).
+pitch, volume, stereo and wavetables, then writes SiON's MML dialect with
+real FM voice definitions (`#OPM@`, `#OPN@`, `#OPL@`), custom `#WAVB`
+tables, and PSG/NES/Game Boy tracks (`%0`, `%1`, `%2`, `%4`, `%8`).
 PCM/ADPCM sample playback is intentionally out of scope.
 
 ## Supported chips
@@ -18,10 +19,16 @@ PCM/ADPCM sample playback is intentionally out of scope.
 | PSG | AY-3-8910 / YM2149 | `%0` square/envelope and noise tracks |
 | PSG | SN76489, Game Gear stereo; T6W28 halves as two mono chips | `%0` tone/noise tracks |
 | APU | NES 2A03 pulse 1/2, triangle, noise | `%1` tracks |
+| Wavetable | Konami SCC / SCC+ (K051649/K052539) | `%4` + `#WAVB` tables |
+| Wavetable | Konami K005289 Bubble System WSG | `%4` + `#WAVB` tables |
+| Wavetable | Hudson HuC6280 (PC Engine) | `%4` + `#WAVB`, `%2` noise |
+| Wavetable | Nintendo Virtual Boy VSU | `%4` + `#WAVB`, `%2` noise |
+| APU | Game Boy DMG pulse 1/2, wave, noise | `%8`, `%4`, `%2` tracks |
 
 Recognized but not converted: YM2413/OPLL, Y8950 ADPCM, YMF278B/OPL4,
-YMF271, YMZ280B, and every sample/ADPCM chip. The report and warnings name
-what was ignored.
+YMF271, YMZ280B, and every sample/ADPCM chip. HuC6280, VSU and Game Boy
+noise use SiON's periodic-noise module; the noise pitch is approximate.
+The report and warnings name what was ignored.
 
 ## Install / run
 
@@ -37,12 +44,14 @@ python -m vgm2sionmml convert "VGM folder" -o mml/
 Options:
 
 ```text
---bpm N          SiON tempo, 1-511 (default 120)
---no-loop        do not emit the `$` loop point
---title TEXT     override #TITLE
---max-voices N   SiON FM voice slot cap (default 256)
---gain F         master gain multiplier (default 0.75; 1.0 keeps source level)
---quiet          only errors
+--bpm N            explicit SiON tempo, 1-511 (default: auto-detect)
+--no-auto-tempo     use 120 BPM instead of auto tempo detection
+--no-loop           do not emit the `$` loop point
+--no-optimize      disable macro/loop/default-length size optimization
+--title TEXT        override #TITLE
+--max-voices N      SiON FM voice slot cap (default 256)
+--gain F            master gain multiplier (default 0.75; 1.0 keeps source level)
+--quiet             only errors
 ```
 
 Example output:
@@ -73,12 +82,17 @@ Example output:
 2. `chips/` contains one register-state decoder per family. Each decoder
    reconstructs key-on/key-off, pitch, patch, TL/gain, pan and LFO state and
    emits a monophonic `ChannelTimeline`.
-3. `model.py` keeps notes with control points for pitch, gain and pan.
+3. `model.py` keeps notes with control points for pitch, gain, pan, waveform
+   changes and OPL operator levels.
 4. `mml.py` quantizes event times to SiON's 1920-tick whole note, splits held
    notes at control points into slurred (`&`) segments, encodes note lengths
    as exact sums of SiON note values, deduplicates FM voices and writes the
    MML.
-5. The loop point becomes a `$` in every track. Notes crossing it are split
+5. The first pass renders token streams.  `optimize.py` then chooses a tempo
+   grid, applies a common default note length, finds immediately repeated
+   token blocks for `[ ... ]n` loops, and emits up to 26 shared `#A`..`#Z`
+   macros.  The second pass writes the compact MML.
+6. The loop point becomes a `$` in every track. Notes crossing it are split
    into an intro copy and a loop-body copy, and every loop body is padded to
    the same end time.
 
@@ -106,6 +120,17 @@ Example output:
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used
   for note ends and volume points. DPCM is ignored.
+* **SCC, K005289, HuC6280, VSU, Game Boy wave**: 32-frame waveforms are
+  normalized to signed 8-bit and deduplicated into `#WAVB` tables. `%4@n`
+  selects a table; held-note waveform rewrites become `@n` changes between
+  slurred segments. K005289 PROM data comes from its `0xC3` VGM data block.
+* **Game Boy pulse/noise**: pulse duties map to `%8` widths; noise uses
+  `%2@2`. NRx2 envelope steps are written as `x` gain points, and NR51 drives
+  `p`.
+* **OPL operator levels**: carrier TL is normalized into `x`; non-carrier TL
+  is written per note as `iN@tl`, which keeps 15k-note OPL3 logs inside the
+  256-voice limit without changing the patch.  OPL multiplier table entries
+  11/13/14 are translated to the equivalent SiON multipliers.
 
 Pitches are computed from each chip's real clock and quantized to SiON's
 1/64-semitone `k` resolution. Notes above B9 are clamped because SiON's
@@ -120,7 +145,8 @@ python -m unittest discover -s tests -v
 The suite covers the VGM header/loop parser, exact duration arithmetic, each
 chip's A4 pitch mapping, OPN stereo, OPM/OPN/OPL operator ordering, OPL 4-op
 and rhythm voices, OPL TL automation, NES triangle/MA3 pitch, SN Game Gear
-stereo, and end-to-end compilation with the reference `libSiON-rs` player.
+stereo, SCC/K005289/HuC6280/VSU/Game Boy wavetable tracks, size optimization,
+and end-to-end compilation with the reference `libSiON-rs` player.
 Sample-song tests skip when their files are absent. The sample expectations
 were cross-checked against libvgm/VGMPlay renders and the vgm2151fur register
 analyses.
@@ -143,10 +169,16 @@ Set `SION_PLAY` to point at a `sion-play` executable if it is not at
   as `x` expression points, and boosts above the key-on level are clamped.
 * Long vibrato/pitch automation is written as stepped, slurred note segments;
   SiON LFO commands are emitted from OPM/OPN LFO registers when present.
-* SiON has 256 FM voice slots and 128 tracks. Voice overflow reuses the
-  nearest timbre and is warned about. The converter currently emits one track
-  per hardware channel; logs with more than 128 simultaneous channels are not
-  supported.
+* SiON has 256 FM voice slots, 256 custom wavetable slots and 128 tracks.
+  Voice/wavetable overflow reuses the nearest timbre and is warned about.
+  The converter currently emits one track per hardware channel; logs with
+  more than 128 simultaneous channels are not supported.
+* HuC6280/VSU/Game Boy noise is approximate (periodic noise, not an exact
+  LFSR/waveform match).  K005289 needs its 0xC3 PROM data block to produce
+  wavetable notes.
+* Auto tempo only chooses a musical grid; pass `--bpm N` when the source has
+  a known tempo.  Optimization is conservative around ties and stops before
+  creating constructs SiON's parser rejects.
 * Dense multi-chip logs can clip in the player. The CLI defaults to `--gain 0.75` for headroom; pass `--gain 1.0` to keep the source level or lower it further.
 
 ## Layout
@@ -165,6 +197,12 @@ vgm2sionmml/
     opl.py        YM3526/YM3812/YMF262
     psg.py        AY-3-8910/YM2149 + SN76489
     nes.py        NES 2A03
+    scc.py        Konami SCC / SCC+
+    k005289.py    Konami K005289
+    huc6280.py    Hudson HuC6280
+    vsu.py        Virtual Boy VSU
+    gb.py         Game Boy DMG
+  optimize.py     two-pass tempo/grid and MML size optimizer
 tests/            synthetic VGM fixtures + sample-song checks
 ```
 

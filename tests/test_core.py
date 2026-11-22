@@ -327,7 +327,8 @@ class ExtractorTests(unittest.TestCase):
         vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x5C: 14318180})))
         note = _only_note(vgm, "opl")
         self.assertEqual(len(note.voice.ops), 4)
-        self.assertEqual([op[6] for op in note.voice.ops], [63, 0, 63, 0])
+        self.assertEqual([op[6] for op in note.voice.ops], [0, 0, 0, 0])
+        self.assertEqual(note.op_tl, ((0, 63), (2, 63)))
 
 
     def test_nes_noise_same_sample_period(self):
@@ -366,7 +367,24 @@ class ExtractorTests(unittest.TestCase):
         ops = notes[0].voice.ops
         self.assertEqual(ops[0][9], 1)   # op1 MUL
         self.assertEqual(ops[1][9], 2)   # op2 MUL
-        self.assertNotEqual(ops[0][6], ops[1][6])
+        self.assertEqual([op[6] for op in ops], [0, 0])
+        self.assertEqual(notes[0].op_tl, ((0, 32),))
+
+    def test_opl_multiplier_compatibility_mapping(self):
+        # SiON's #OPL@ parser maps OPL multiplier entries 11/13/14 to the
+        # generic OPM table values 10/12/15.  Keep the voice equivalent.
+        cmds = bytearray()
+        for reg, val in (
+            (0x20, 11), (0x23, 14), (0x40, 0), (0x43, 0),
+            (0x60, 0xF0), (0x63, 0xF0), (0x80, 0), (0x83, 0),
+            (0xA0, 0x44), (0xC0, 0), (0xB0, 0x32),
+        ):
+            cmds += synth.ym3812(reg, val)
+        cmds += synth.wait(1000)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 1000, clocks={0x50: 3579545})))
+        note = _only_note(vgm, "opl")
+        self.assertEqual(note.voice.ops[0][9], 10)
+        self.assertEqual(note.voice.ops[1][9], 15)
 
     def test_opl_rhythm_drums(self):
         cmds = bytearray()

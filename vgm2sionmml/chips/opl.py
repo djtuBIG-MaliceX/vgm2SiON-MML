@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from ..model import ChannelTimeline, FmVoice, Track, VoiceLibrary
 from ..pitch import freq_to_midi, midi_to_units, opl_freq
 from ..vgm import VgmFile
-from .common import ExtractResult, db_gain, normalize_carrier_levels, sorted_writes
+from .common import ExtractResult, db_gain, sorted_writes
 
 BURST_SAMPLES = 64
 # OPL operator slot addresses per channel (0-8).
@@ -207,6 +207,12 @@ class OplState:
         ksr = (r20 >> 4) & 1
         ksl = (r40 >> 6) & 3
         mul = r20 & 0x0F
+        # SiON's #OPL@ parser maps these three OPL multiplier table entries
+        # back to the generic OPM table.  Keep the patch equivalent.
+        if mul in (11, 13):
+            mul -= 1
+        elif mul == 14:
+            mul += 1
         ams = 1 if (r20 & 0x80) else 0
         return (wave, ar, dr, rr, egt, sl, tl, ksr, ksl, mul, ams)
 
@@ -267,6 +273,44 @@ class OplState:
             self._op_params(bank_hi | slots[1]),
         )
         return min(ops[i][6] for i in TWO_CARRIERS.get(alg, (1,)))
+
+
+def _slot_operator(ch: int, low: int, op_count: int) -> int | None:
+    """Map a physical OPL operator slot to SiON's operator index."""
+    slots = CHANNEL_SLOTS[ch % 9]
+    if low == slots[0]:
+        return 0
+    if low == slots[1]:
+        return 1
+    # Four-operator pairs use the second channel of the pair.
+    return None
+
+
+def _opl_voice(alg: int, fb: int, ops) -> tuple[FmVoice, int, tuple[tuple[int, int], ...]]:
+    """Build a TL-normalized OPL voice and its per-note operator overrides.
+
+    The carrier floor becomes the note's ``x`` level, as before.  Modulator
+    TL is moved out of the voice too: SiON has 256 FM slots, while a driver
+    that rides the FM depth writes a different modulator level on many notes.
+    The renderer re-applies the logged modulator TL with ``iN@tl``, so one
+    slot can serve every note of that timbre without changing its sound.
+    """
+    carriers = set(
+        FOUR_CARRIERS.get(alg, (3,)) if len(ops) == 4
+        else TWO_CARRIERS.get(alg, (1,))
+    )
+    floor = min((ops[i][6] for i in carriers), default=0)
+    out = []
+    overrides: list[tuple[int, int]] = []
+    for i, op in enumerate(ops):
+        values = list(op)
+        if i in carriers:
+            values[6] = max(0, values[6] - floor)
+        else:
+            overrides.append((i, values[6]))
+            values[6] = 0
+        out.append(tuple(values))
+    return FmVoice("opl", alg, fb, tuple(out)), floor, tuple(overrides)
 
 
 def _apply_burst(state: OplState, writes: list, start: int, ch: int) -> OplState:
@@ -432,18 +476,17 @@ def extract_opl(
                     if patch is None:
                         continue
                     alg, fb, ops = patch
-                    carrier_set = FOUR_CARRIERS.get(alg, (3,)) if len(ops) == 4 else TWO_CARRIERS.get(alg, (1,))
-                    ops, tl0 = normalize_carrier_levels(ops, carrier_set, 6)
-                    voice = FmVoice("opl", alg, fb, ops)
+                    voice, tl0, op_tl = _opl_voice(alg, fb, ops)
                     pitch = snap.pitch_units(ch, clock)
                     pan, pan_gain = snap.pan(ch)
-                    timelines[ch].note_on(
+                    note = timelines[ch].note_on(
                         sample,
                         pitch,
                         voice,
                         gain=pan_gain * db_gain(tl0 * 0.75),
                         pan=pan,
                     )
+                    note.op_tl = op_tl
                     base_tl[ch] = tl0
                     mute[ch] = pan_gain <= 0.0
                     sounding[ch] = True
@@ -508,11 +551,23 @@ def extract_opl(
                 else:
                     ch = bank * 9 + owner
                 if 0 <= ch < total_channels and sounding[ch]:
-                    cur = state.carrier_tl(ch)
-                    gain = 0.0 if mute[ch] else max(
-                        0.0, min(1.0, db_gain(cur * 0.75))
+                    alg = state.regs.get(state.channel_base(ch) | 0xC0, 0) & 1
+                    ops = len(state.patch(ch)[2]) if state.patch(ch) else 2
+                    carriers = set(
+                        FOUR_CARRIERS.get(alg, (3,)) if ops == 4
+                        else TWO_CARRIERS.get(alg, (1,))
                     )
-                    timelines[ch].gain(sample, gain)
+                    op_index = _slot_operator(ch, low, ops)
+                    if op_index is not None and op_index not in carriers:
+                        timelines[ch].op_tl(
+                            sample, op_index, val & 0x3F
+                        )
+                    else:
+                        cur = state.carrier_tl(ch)
+                        gain = 0.0 if mute[ch] else max(
+                            0.0, min(1.0, db_gain(cur * 0.75))
+                        )
+                        timelines[ch].gain(sample, gain)
                     stats["tl_moves"] += 1
 
         for ch in range(total_channels):

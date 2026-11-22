@@ -136,6 +136,30 @@ def ay_noise_freq(period: int, clock: int) -> float:
     return clock / (16.0 * period)
 
 
+def scc_freq(period: int, clock: int) -> float:
+    """Konami SCC frequency: clock / (16 * (period + 1))."""
+    period = max(0, min(0xFFF, int(period)))
+    return clock / (16.0 * (period + 1))
+
+
+def huc6280_freq(period: int, clock: int) -> float:
+    """HuC6280 PSG frequency: clock / (32 * period); 0 means 4096."""
+    period = int(period) & 0xFFF
+    if period == 0:
+        period = 4096
+    return clock / (32.0 * period)
+
+
+def vsu_freq(period: int, clock: int) -> float:
+    """Virtual Boy VSU full-wave frequency.
+
+    ``period`` is the hardware's ``2048 - Frequency`` register.  A 32-step
+    wave advances once every ``period`` clocks.
+    """
+    period = max(1, min(0x7FF, int(period)))
+    return clock / (32.0 * period)
+
+
 def sn_freq(divider: int, clock: int) -> float:
     divider = max(1, min(0x3FF, int(divider)))
     return clock / (32.0 * divider)
@@ -170,3 +194,29 @@ def ay_noise_note(period: int) -> int:
 
 def sn_noise_note(rate: int) -> int:
     return 12 + max(0, min(7, int(rate))) * 4
+
+def gb_pulse_freq(period: int, clock: int) -> float:
+    """Game Boy pulse channel: clock / (32 * (2048 - period))."""
+    period = int(period) & 0x7FF
+    return clock / (32.0 * (2048 - period if period < 2048 else 1))
+
+
+def gb_wave_freq(period: int, clock: int) -> float:
+    """Game Boy wave channel: clock / (64 * (2048 - period))."""
+    period = int(period) & 0x7FF
+    return clock / (64.0 * (2048 - period if period < 2048 else 1))
+
+
+def gb_noise_rate(nr43: int) -> float:
+    """Game Boy LFSR clock in Hz relative to a 4.194304 MHz APU."""
+    shift = (nr43 >> 4) & 0x0F
+    divisor = nr43 & 7
+    divisor = divisor if divisor else 0.5
+    return 4_194_304.0 / (divisor * (1 << shift))
+
+
+def gb_noise_note(nr43: int) -> int:
+    """Approximate the noise note used by SiON's periodic-noise module."""
+    shift = (nr43 >> 4) & 0x0F
+    divisor = nr43 & 7
+    return max(0, min(119, 60 + (15 - shift) * 4 + (7 - divisor)))

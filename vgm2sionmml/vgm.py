@@ -40,6 +40,10 @@ HDR_OPL3 = 0x5C
 HDR_AY8910 = 0x74
 HDR_GB = 0x80
 HDR_NES = 0x84
+HDR_SCC = 0x9C
+HDR_HUC6280 = 0xA4
+HDR_VSU = 0xC4
+HDR_K005289 = 0xEC
 
 DEFAULT_CLOCKS = {
     "ym2151": 3_579_545,
@@ -55,6 +59,10 @@ DEFAULT_CLOCKS = {
     "sn76489": 3_579_545,
     "nes": 1_789_773,
     "gb": 4_194_304,
+    "k051649": 1_789_772,
+    "huc6280": 3_579_545,
+    "vsu": 5_000_000,
+    "k005289": 3_579_545,
 }
 
 # Extra-header chip ids (libvgm device indices).
@@ -121,6 +129,14 @@ class ChipWrite:
 
 
 @dataclass
+class DataBlock:
+    block_type: int
+    start: int
+    data: bytes
+    sample: int
+
+
+@dataclass
 class VgmFile:
     path: Path
     version: int
@@ -135,6 +151,7 @@ class VgmFile:
     rate: int = 60
     header_clocks: dict[str, int] = field(default_factory=dict)
     unsupported_writes: dict[str, int] = field(default_factory=dict)
+    data_blocks: list[DataBlock] = field(default_factory=list)
 
     @property
     def duration_seconds(self) -> float:
@@ -420,6 +437,24 @@ def load_vgm(path: Path | str) -> VgmFile:
     # Game Boy (recognized, not converted)
     _add_main_clock(clocks, "gb", _sane_clock(_header_flags(raw, HDR_GB)))
 
+    # Konami SCC / Hudson HuC6280 / Virtual Boy VSU.  The high bits of
+    # these clock words carry dual/plus flags instead of clock bits.
+    raw_scc = _header_flags(raw, HDR_SCC)
+    _add_main_clock(clocks, "k051649", _sane_clock(raw_scc))
+    flags["k051649_dual"] = int(bool(raw_scc & 0x40000000))
+    flags["k051649_plus"] = int(bool(raw_scc & 0x80000000))
+
+    raw_huc = _header_flags(raw, HDR_HUC6280)
+    _add_main_clock(clocks, "huc6280", _sane_clock(raw_huc))
+    flags["huc6280_dual"] = int(bool(raw_huc & 0x40000000))
+
+    raw_vsu = _header_flags(raw, HDR_VSU)
+    _add_main_clock(clocks, "vsu", _sane_clock(raw_vsu))
+    flags["vsu_dual"] = int(bool(raw_vsu & 0x40000000))
+
+    # Konami K005289 Bubble System WSG (VGM 1.71).
+    _add_main_clock(clocks, "k005289", _sane_clock(_header_flags(raw, HDR_K005289)))
+
     # Extra header clock list.  Repeated ids are instances in order; entries
     # already supplied by a main field fill instance 0 first.
     for chip_id, values in extra_clocks.items():
@@ -456,6 +491,7 @@ def load_vgm(path: Path | str) -> VgmFile:
     pos = data_offset(raw)
     n = len(raw)
     saw_dac = False
+    data_blocks: list[DataBlock] = []
     loop_offset = 0x1C + loop_rel if loop_rel else 0
     loop_sample_from_offset: int | None = None
 
@@ -490,12 +526,23 @@ def load_vgm(path: Path | str) -> VgmFile:
             pos += 1
             continue
 
-        if cmd == 0x67:  # data block: type, 32-bit size, payload
+        if cmd == 0x67:  # data block: 0x66, type, 32-bit size, payload
             if pos + 7 > n:
                 break
+            block_type = raw[pos + 2]
             size = _u32(raw, pos + 3)
             if size > n - pos - 7:
                 size = max(0, n - pos - 7)
+            payload = raw[pos + 7 : pos + 7 + size]
+            if block_type == 0xC3 and len(payload) >= 2:
+                data_blocks.append(
+                    DataBlock(
+                        0xC3,
+                        int.from_bytes(payload[:2], "little"),
+                        bytes(payload[2:]),
+                        sample,
+                    )
+                )
             pos += 7 + size
             continue
         if cmd == 0x68:  # PCM RAM write
@@ -524,6 +571,48 @@ def load_vgm(path: Path | str) -> VgmFile:
             continue
         if cmd == 0x93:
             pos += 11
+            continue
+
+        if cmd == 0xB3:  # Game Boy DMG APU register write
+            if pos + 3 <= n:
+                rr = raw[pos + 1]
+                add("gb", (rr >> 7) & 1, rr & 0x7F, raw[pos + 2])
+            pos += 3
+            continue
+        if cmd == 0x42:  # K005289 Bubble System WSG register write
+            if pos + 3 <= n:
+                off = (raw[pos + 1] >> 4) & 0x0F
+                val = ((raw[pos + 1] & 0x0F) << 8) | raw[pos + 2]
+                add("k005289", 0, off, val)
+            pos += 3
+            continue
+        if cmd == 0xB9:  # HuC6280 PSG register write
+            if pos + 3 <= n:
+                rr = raw[pos + 1]
+                add("huc6280", (rr >> 7) & 1, rr & 0x7F, raw[pos + 2])
+            pos += 3
+            continue
+        if cmd == 0xC7:  # Virtual Boy VSU register word write
+            if pos + 4 <= n:
+                reg = int.from_bytes(raw[pos + 1 : pos + 3], "big")
+                add(
+                    "vsu",
+                    1 if reg & 0x8000 else 0,
+                    reg & 0x7FFF,
+                    raw[pos + 3],
+                )
+            pos += 4
+            continue
+        if cmd == 0xD2:  # Konami SCC register write
+            if pos + 4 <= n:
+                port = raw[pos + 1]
+                add(
+                    "k051649",
+                    (port >> 7) & 1,
+                    ((port & 0x7F) << 8) | raw[pos + 2],
+                    raw[pos + 3],
+                )
+            pos += 4
             continue
 
         if cmd == 0x30:
@@ -716,4 +805,5 @@ def load_vgm(path: Path | str) -> VgmFile:
         rate=rate,
         header_clocks={k: v for (k, i), v in clocks.items() if i == 0},
         unsupported_writes=unsupported,
+        data_blocks=data_blocks,
     )

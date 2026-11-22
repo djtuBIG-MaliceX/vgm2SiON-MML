@@ -7,15 +7,21 @@ from pathlib import Path
 
 from .chips import (
     extract_ay8910,
+    extract_gb,
+    extract_huc6280,
+    extract_k005289,
     extract_nes,
     extract_opl,
     extract_opn,
+    extract_scc,
     extract_sn76489,
+    extract_vsu,
     extract_ym2151,
 )
 from .chips.common import ExtractResult
 from .mml import MmlRenderer
-from .model import Song, VoiceLibrary
+from .optimize import detect_bpm
+from .model import Song, VoiceLibrary, WaveTableLibrary
 from .vgm import VgmFile, load_vgm
 
 
@@ -47,6 +53,11 @@ HANDLED = {
     *OPL_KINDS,
     "sn76489",
     "nes",
+    "k051649",
+    "huc6280",
+    "vsu",
+    "gb",
+    "k005289",
 }
 
 
@@ -59,19 +70,21 @@ def _max_order(result: ExtractResult, fallback: int) -> int:
 def convert_vgm(
     vgm: VgmFile,
     *,
-    bpm: int = 120,
+    bpm: int | None = None,
     loop: bool = True,
     title: str | None = None,
     max_voices: int = 256,
     gain: float = 1.0,
+    optimize: bool = True,
 ) -> ConversionResult:
-    if not 1 <= bpm <= 511:
+    if bpm is not None and not 1 <= bpm <= 511:
         raise ConversionError("bpm must be between 1 and 511")
     if not 0.0 < gain <= 4.0:
         raise ConversionError("gain must be greater than 0 and at most 4")
     if not 1 <= max_voices <= 256:
         raise ConversionError("max_voices must be between 1 and 256")
     voices = VoiceLibrary(limit=max_voices)
+    waves = WaveTableLibrary(limit=256)
     warnings: list[str] = list(vgm.warnings)
     stats: dict[str, object] = {"source_writes": len(vgm.writes)}
     tracks = []
@@ -146,6 +159,38 @@ def convert_vgm(
             f"nes_{instance}",
         )
 
+    # Wavetable chips share SiON's %4 SCC module and its 256 #WAVB slots.
+    for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "k051649"}):
+        result = extract_scc(
+            vgm, waves, instance=instance, order_base=order, label="SCC"
+        )
+        absorb(result, f"k051649_{instance}")
+    for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "huc6280"}):
+        result = extract_huc6280(
+            vgm, waves, instance=instance, order_base=order, label="HuC6280"
+        )
+        absorb(result, f"huc6280_{instance}")
+    for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "vsu"}):
+        result = extract_vsu(
+            vgm, waves, instance=instance, order_base=order, label="VSU"
+        )
+        absorb(result, f"vsu_{instance}")
+    for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "gb"}):
+        absorb(
+            extract_gb(
+                vgm, waves, instance=instance, order_base=order, label="Game Boy"
+            ),
+            f"gb_{instance}",
+        )
+    for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "k005289"}):
+        absorb(
+            extract_k005289(
+                vgm, waves, instance=instance, order_base=order,
+                label="K005289",
+            ),
+            f"k005289_{instance}",
+        )
+
     used = {w.chip for w in vgm.writes}
     if any(w.chip == "ym2608" and 0x10 <= (w.reg & 0xFF) <= 0x1F for w in vgm.writes):
         warnings.append("YM2608 rhythm/ADPCM writes ignored (PCM is out of scope)")
@@ -166,7 +211,10 @@ def convert_vgm(
                     for t, v in note.gain_points
                 ]
 
-    tracks = [t for t in tracks if t.timeline.notes]
+    tracks = [
+        t for t in tracks
+        if any(n.end is None or n.end > n.start for n in t.timeline.notes)
+    ]
     if len(tracks) > 128:
         warnings.append(
             f"{len(tracks)} tracks emitted; SiON's default maximum is 128"
@@ -175,8 +223,14 @@ def convert_vgm(
         raise ConversionError(
             "no convertible notes found (supported chips: YM2151, YM2203, "
             "YM2612, YM2608, YM2610, YM3526, YM3812, YMF262, AY-3-8910, "
-            "SN76489, NES APU)"
+            "SN76489, NES APU, SCC, HuC6280, Virtual Boy VSU, Game Boy, "
+            "K005289)"
         )
+
+    auto_tempo = bpm is None
+    tempo_score = 0.0
+    if bpm is None:
+        bpm, tempo_score = detect_bpm(tracks, vgm.total_samples, vgm.rate)
 
     title_text = title or vgm.gd3.get("title") or vgm.path.stem
     if vgm.gd3.get("game") and not title:
@@ -185,17 +239,19 @@ def convert_vgm(
         title=title_text,
         tracks=tracks,
         voices=voices,
+        waves=waves,
         total_samples=vgm.total_samples,
         loop_sample=vgm.loop_sample if loop else None,
         bpm=bpm,
         warnings=warnings,
     )
-    renderer = MmlRenderer(song)
+    renderer = MmlRenderer(song, optimize=optimize)
     text = renderer.render()
     notes = sum(len(t.timeline.notes) for t in tracks)
     stats["tracks"] = len(tracks)
     stats["notes"] = notes
     stats["voices"] = len(voices.voices)
+    stats["waves"] = len(waves.tables)
     stats["bpm"] = bpm
     stats["gain"] = gain
     stats["duration_seconds"] = round(vgm.duration_seconds, 3)
@@ -206,7 +262,14 @@ def convert_vgm(
         "rests": renderer.stats.rests,
         "loop_split": renderer.stats.loop_split,
         "clamped": renderer.stats.clamped,
+        "original_chars": renderer.stats.original_chars,
+        "optimized_chars": renderer.stats.optimized_chars,
+        "macros": renderer.stats.macros,
+        "loops": renderer.stats.loops,
     }
+    stats["optimize"] = optimize
+    stats["auto_tempo"] = auto_tempo
+    stats["tempo_score"] = round(tempo_score, 6)
     if renderer.stats.clamped:
         warnings.append(
             f"{renderer.stats.clamped} note segment(s) above B9 were clamped"
@@ -215,6 +278,11 @@ def convert_vgm(
         warnings.append(
             f"{voices.overflow} note(s) reused a nearby FM voice after the "
             f"{max_voices}-voice SiON limit"
+        )
+    if waves.overflow:
+        warnings.append(
+            f"{waves.overflow} note(s) reused a nearby wavetable after the "
+            "256-slot SiON limit"
         )
     # Keep the report readable when the same condition is found by two paths.
     seen: set[str] = set()
@@ -234,13 +302,20 @@ def convert_vgm(
 def convert_file(
     path: str | Path,
     *,
-    bpm: int = 120,
+    bpm: int | None = None,
     loop: bool = True,
     title: str | None = None,
     max_voices: int = 256,
     gain: float = 1.0,
+    optimize: bool = True,
 ) -> ConversionResult:
     vgm = load_vgm(path)
     return convert_vgm(
-        vgm, bpm=bpm, loop=loop, title=title, max_voices=max_voices
+        vgm,
+        bpm=bpm,
+        loop=loop,
+        title=title,
+        max_voices=max_voices,
+        gain=gain,
+        optimize=optimize,
     )

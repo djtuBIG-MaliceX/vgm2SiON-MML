@@ -50,7 +50,18 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("convert", help="convert a file or folder")
     c.add_argument("input", type=Path)
     c.add_argument("-o", "--output", type=Path, help="output .sionmml file or folder")
-    c.add_argument("--bpm", type=int, default=120, help="SiON tempo (default 120)")
+    c.add_argument(
+        "--bpm", type=int, default=None,
+        help="SiON tempo; default auto-detects a grid, 120 when undecided",
+    )
+    c.add_argument(
+        "--no-auto-tempo", action="store_true",
+        help="use 120 BPM instead of auto tempo detection",
+    )
+    c.add_argument(
+        "--no-optimize", action="store_true",
+        help="disable macro/loop/default-length size optimization",
+    )
     c.add_argument("--no-loop", action="store_true", help="do not emit the $ loop point")
     c.add_argument("--title", help="override #TITLE")
     c.add_argument("--max-voices", type=int, default=256)
@@ -65,11 +76,12 @@ def _convert_one(args, src: Path, dst: Path | None) -> int:
     try:
         result = convert_file(
             src,
-            bpm=args.bpm,
+            bpm=(120 if args.no_auto_tempo else args.bpm),
             loop=not args.no_loop,
             title=args.title,
             max_voices=args.max_voices,
             gain=args.gain,
+            optimize=not args.no_optimize,
         )
     except (ConversionError, ValueError, OSError) as exc:
         print(f"ERROR {src}: {exc}", file=sys.stderr)
@@ -79,9 +91,17 @@ def _convert_one(args, src: Path, dst: Path | None) -> int:
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(result.text, encoding="utf-8")
     if not args.quiet:
+        render = result.stats.get("render", {})
+        saved = render.get("original_chars", 0) - render.get("optimized_chars", 0)
+        extra = (
+            f", {result.stats.get('bpm')} BPM"
+            f", {saved} chars saved"
+            f", {render.get('macros', 0)} macros/{render.get('loops', 0)} loops"
+        )
         print(
             f"{src} -> {dst}  "
-            f"({result.tracks} tracks, {result.notes} notes, {result.voices} voices)"
+            f"({result.tracks} tracks, {result.notes} notes, {result.voices} voices"
+            f"{extra})"
         )
         for warning in result.warnings:
             print(f"  warning: {warning}")

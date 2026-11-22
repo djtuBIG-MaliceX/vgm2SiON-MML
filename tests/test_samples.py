@@ -44,6 +44,26 @@ SAMPLES = {
         Path("D:/Downloads/StarfireOPNA/02 Title Screen.vgz"),
         "#OPN@",
     ),
+    "scc": (
+        DOWNLOADS / "moreVGMs" / "KittenKaboodleVGM" / "03 Favorite Meow, Cute Meow (Stage 1).vgz",
+        "#WAVB",
+    ),
+    "huc6280": (
+        DOWNLOADS / "moreVGMs" / "ShanghaiPCE" / "02 BGM 1.vgz",
+        "#WAVB",
+    ),
+    "vsu": (
+        DOWNLOADS / "moreVGMs" / "Jack_Bros._(Nintendo_Virtual_Boy)" / "03 Title.vgz",
+        "#WAVB",
+    ),
+    "gb": (
+        DOWNLOADS / "moreVGMs" / "KirbyDreamLand2VGM" / "01 Title Theme.vgz",
+        "%8",
+    ),
+    "k005289": (
+        DOWNLOADS / "moreVGMs" / "Gradius VGM Rip" / "03 Challenger 1985 (Stage 1).vgz",
+        "#WAVB",
+    ),
 }
 
 
@@ -107,6 +127,28 @@ class SampleConversionTests(unittest.TestCase):
         self._check("nes_ay")
         result = convert_file(SAMPLES["nes_ay"][0])
         self.assertTrue(any("DPCM" in w for w in result.warnings))
+
+    def test_scc_sample(self):
+        result = self._check("scc")
+        self.assertGreater(result.stats["waves"], 0)
+        self.assertIn("%4", result.text)
+
+    def test_huc6280_sample(self):
+        result = self._check("huc6280")
+        self.assertGreater(result.stats["waves"], 0)
+
+    def test_vsu_sample(self):
+        result = self._check("vsu")
+        self.assertGreater(result.stats["waves"], 0)
+
+    def test_gb_sample(self):
+        result = self._check("gb")
+        self.assertIn("%8", result.text)
+        self.assertIn("%2", result.text)
+
+    def test_k005289_sample(self):
+        result = self._check("k005289")
+        self.assertGreater(result.stats["waves"], 0)
 
 
 if __name__ == "__main__":

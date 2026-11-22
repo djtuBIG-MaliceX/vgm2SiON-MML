@@ -81,6 +81,67 @@ class SimpleVoice:
         return (self.module, self.wave)
 
 
+@dataclass(frozen=True)
+class WaveTable:
+    """One custom SiON wavetable (``#WAVB``), signed 8-bit samples."""
+
+    samples: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if not 1 <= len(self.samples) <= 256:
+            raise ValueError("a SiON wavetable needs 1-256 samples")
+        for value in self.samples:
+            if not -128 <= value <= 127:
+                raise ValueError("wavetable samples must be signed 8-bit")
+
+    @property
+    def key(self) -> tuple[int, ...]:
+        return self.samples
+
+    def mml(self, index: int) -> str:
+        data = "".join(f"{value & 0xFF:02x}" for value in self.samples)
+        return f"#WAVB{index}{{{data}}};"
+
+
+class WaveTableLibrary:
+    """Deduplicated wavetables, capped at SiON's 256 SCC slots."""
+
+    def __init__(self, limit: int = 256) -> None:
+        self.limit = limit
+        self.tables: list[WaveTable] = []
+        self._index: dict[tuple[int, ...], int] = {}
+        self.overflow = 0
+
+    def add(self, samples) -> int:
+        table = WaveTable(tuple(int(v) for v in samples))
+        hit = self._index.get(table.key)
+        if hit is not None:
+            return hit
+        if len(self.tables) < self.limit:
+            idx = len(self.tables)
+            self.tables.append(table)
+            self._index[table.key] = idx
+            return idx
+        # Keep the most plausible timbre rather than dropping the note.
+        self.overflow += 1
+        best = 0
+        best_err = None
+        for i, candidate in enumerate(self.tables):
+            err = sum(
+                (a - b) * (a - b)
+                for a, b in zip(candidate.samples, table.samples)
+            )
+            err += abs(len(candidate.samples) - len(table.samples)) * 16384
+            if best_err is None or err < best_err:
+                best, best_err = i, err
+        return best
+
+    def get(self, index: int) -> WaveTable | None:
+        if 0 <= index < len(self.tables):
+            return self.tables[index]
+        return None
+
+
 @dataclass
 class Note:
     start: int
@@ -92,6 +153,11 @@ class Note:
     pitch_points: list[tuple[int, float]] = field(default_factory=list)
     gain_points: list[tuple[int, float]] = field(default_factory=list)
     pan_points: list[tuple[int, float]] = field(default_factory=list)
+    # Wavetable index changes during the held note (SCC/HuC6280/VSU morphs).
+    wave_points: list[tuple[int, int]] = field(default_factory=list)
+    # OPL operator total-level overrides at the note's gate, and later moves.
+    op_tl: tuple[tuple[int, int], ...] = ()
+    op_tl_points: list[tuple[int, int, int]] = field(default_factory=list)
     # Diagnostic tags (never emitted).
     tag: str = ""
 
@@ -127,6 +193,19 @@ class Note:
         if self.pan_points and abs(value - self.pan_points[-1][1]) <= epsilon:
             return
         self.pan_points.append((sample, value))
+
+    def add_wave(self, sample: int, index: int) -> None:
+        if not self.wave_points or self.wave_points[-1][1] != index:
+            self.wave_points.append((sample, index))
+
+    def add_op_tl(self, sample: int, operator: int, value: int) -> None:
+        if (
+            self.op_tl_points
+            and self.op_tl_points[-1][1] == operator
+            and self.op_tl_points[-1][2] == value
+        ):
+            return
+        self.op_tl_points.append((sample, operator, value))
 
 
 class ChannelTimeline:
@@ -184,6 +263,14 @@ class ChannelTimeline:
         if self.open is not None:
             self.open.add_pan(sample, value)
 
+    def wave(self, sample: int, index: int) -> None:
+        if self.open is not None:
+            self.open.add_wave(sample, index)
+
+    def op_tl(self, sample: int, operator: int, value: int) -> None:
+        if self.open is not None:
+            self.open.add_op_tl(sample, operator, value)
+
     def close_all(self, sample: int) -> None:
         if self.open is not None:
             self.open.close(sample)
@@ -200,6 +287,10 @@ class ChannelTimeline:
             note.pitch_points = [(t + samples, v) for t, v in note.pitch_points]
             note.gain_points = [(t + samples, v) for t, v in note.gain_points]
             note.pan_points = [(t + samples, v) for t, v in note.pan_points]
+            note.wave_points = [(t + samples, v) for t, v in note.wave_points]
+            note.op_tl_points = [
+                (t + samples, op, v) for t, op, v in note.op_tl_points
+            ]
 
 
 @dataclass
@@ -286,6 +377,7 @@ class Song:
     tracks: list[Track]
     voices: VoiceLibrary
     total_samples: int
+    waves: WaveTableLibrary = field(default_factory=WaveTableLibrary)
     loop_sample: int | None = None
     bpm: int = 120
     warnings: list[str] = field(default_factory=list)

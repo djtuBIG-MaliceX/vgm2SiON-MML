@@ -53,6 +53,40 @@ def ay8910(reg: int, val: int) -> bytes:
     return bytes([0xA0, reg & 0xFF, val & 0xFF])
 
 
+def scc(bank: int, reg: int, val: int) -> bytes:
+    return bytes([0xD2, bank & 0x7F, reg & 0xFF, val & 0xFF])
+
+
+def huc(reg: int, val: int) -> bytes:
+    return bytes([0xB9, reg & 0xFF, val & 0xFF])
+
+
+def vsu(reg: int, val: int) -> bytes:
+    return bytes([0xC7, (reg >> 8) & 0xFF, reg & 0xFF, val & 0xFF])
+
+
+def gb_apu(reg: int, val: int) -> bytes:
+    return bytes([0xB3, reg & 0xFF, val & 0xFF])
+
+
+def k005289(off: int, val: int) -> bytes:
+    return bytes([
+        0x42,
+        ((off & 0x0F) << 4) | ((val >> 8) & 0x0F),
+        val & 0xFF,
+    ])
+
+
+def data_block(block_type: int, start: int, payload: bytes) -> bytes:
+    size = len(payload) + 2
+    return (
+        bytes([0x67, 0x66, block_type & 0xFF])
+        + size.to_bytes(4, "little")
+        + (start & 0xFFFF).to_bytes(2, "little")
+        + payload
+    )
+
+
 def sn76489(value: int) -> bytes:
     return bytes([0x50, value & 0xFF])
 
