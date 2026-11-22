@@ -217,9 +217,14 @@ class MmlRenderer:
             tokens.append("$")
             self._emit_notes(track, post, 0, state, tokens)
             if not post:
-                tokens.append("r1")
+                tokens.append("r" + duration_token(max(1, end_tick)))
             else:
-                cursor = self._cursor_after(post)
+                # `state.cursor` is the duration the emitted tokens actually
+                # consumed.  Deriving the tail from note.end is unsafe when a
+                # source note extends past the song end or is clipped away:
+                # recomputing from note ends can overestimate the cursor and
+                # leave this channel's loop body short.
+                cursor = min(end_tick, state.cursor)
                 if end_tick > cursor:
                     tokens.append("r" + duration_token(end_tick - cursor))
                     self.stats.rests += 1
@@ -227,7 +232,7 @@ class MmlRenderer:
 
         self._emit_notes(track, pre, 0, state, tokens)
         if loop_tick is not None:
-            cursor = self._cursor_after(pre)
+            cursor = min(loop_tick, state.cursor)
             gap = loop_tick - cursor
             if gap > 0:
                 tokens.append("r" + duration_token(gap))
@@ -235,15 +240,16 @@ class MmlRenderer:
             tokens.append("$")
             self._emit_notes(track, post, loop_tick, state, tokens)
             if not post:
-                # A non-empty loop body keeps the repeat well-defined.
+                # A non-empty loop body keeps the repeat well-defined and
+                # aligns every channel at the loop end.
                 tokens.append("r" + duration_token(max(1, end_tick - loop_tick)))
             else:
-                cursor = self._cursor_after(post)
+                cursor = min(end_tick, state.cursor)
                 if end_tick > cursor:
                     tokens.append("r" + duration_token(end_tick - cursor))
                     self.stats.rests += 1
         else:
-            cursor = self._cursor_after(pre)
+            cursor = min(end_tick, state.cursor)
             if end_tick > cursor + TICKS_PER_WHOLE:
                 # Keep a little tail so every track reaches the song's end.
                 tokens.append("r" + duration_token(end_tick - cursor))
@@ -328,14 +334,6 @@ class MmlRenderer:
         if changed:
             track.timeline.notes = sorted(out, key=lambda n: (n.start, n.end or n.start))
         return loop_tick
-
-    def _cursor_after(self, notes: list[Note]) -> int:
-        bpm = self.song.bpm
-        end = 0
-        for note in notes:
-            if note.end is not None:
-                end = max(end, ticks_from_samples(note.end, bpm))
-        return end
 
     # ------------------------------------------------------------------ notes
     def _emit_notes(

@@ -89,6 +89,24 @@ class MmlTests(unittest.TestCase):
         self.assertIn("#OPM@0{", text)
         self.assertLess(text.index("#OPM@0{"), text.index("%6"))
 
+    def test_loop_body_pads_each_track_to_song_end(self):
+        voices = VoiceLibrary()
+        voice = FmVoice("opm", 7, 0, ((1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0),) * 4)
+        tracks = [
+            Track("short", 6, "fm", _timeline(voice), order=0),
+            Track("long", 6, "fm", _timeline(voice), order=1),
+        ]
+        tracks[0].timeline.notes[0].end = 22050
+        tracks[1].timeline.notes[0].end = 44100
+        song = Song("T", tracks, voices, 44100, loop_sample=0, bpm=120)
+        text = render_song(song)
+        track_lines = [line for line in text.splitlines() if line.startswith("%")]
+        self.assertEqual(len(track_lines), 2)
+        self.assertTrue(all("$" in line for line in track_lines))
+        # The short track must be padded to the same loop-body end.
+        self.assertIn("r", track_lines[0].split("$", 1)[1])
+        self.assertNotIn("r", track_lines[1].split("$", 1)[1])
+
     def test_tempo_is_repeated_on_every_track(self):
         voices = VoiceLibrary()
         voice = FmVoice("opm", 7, 0, ((1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0),) * 4)

@@ -61,6 +61,20 @@ class WavetableTests(unittest.TestCase):
         self.assertEqual(notes[0].voice.module, 4)
         self.assertAlmostEqual(notes[0].pitch / 64.0, 69.0, delta=0.08)
 
+    def test_huc6280_drops_sub_frame_percussion_gates(self):
+        cmds = bytearray()
+        cmds += synth.huc(0, 5)
+        cmds += synth.huc(7, 0x9F)
+        cmds += synth.huc(4, 0x9F)
+        cmds += synth.wait(50)
+        cmds += synth.huc(4, 0)
+        cmds += synth.wait(500)
+        vgm = self._load(bytes(cmds), 550, {0xA4: 3_579_545})
+        result = extract_huc6280(vgm, WaveTableLibrary())
+        self.assertEqual(result.stats["glitches"], 1)
+        self.assertFalse(any("noise" in t.label for t in result.tracks))
+        self.assertTrue(any("sub-frame" in w for w in result.warnings))
+
     def test_vsu_note_and_wave_table(self):
         cmds = bytearray()
         for i in range(32):
@@ -146,6 +160,14 @@ class WavetableTests(unittest.TestCase):
         macros, _ = find_macros([long])
         self.assertEqual(len(macros), 1)
         self.assertEqual(macros[0][1], body)
+
+    def test_macros_need_three_notes(self):
+        # Four commands, but only two are notes: don't spend a macro on it.
+        body = ["c", "d", "x1", "x2"]
+        self.assertEqual(find_macros([body * 20])[0], [])
+        body = ["c", "d", "e", "x1"]
+        macros, _ = find_macros([body * 20])
+        self.assertEqual(len(macros), 1)
 
     def test_pitch_and_gain_table_envelopes_render(self):
         tl = ChannelTimeline("tables")

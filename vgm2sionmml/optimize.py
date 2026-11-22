@@ -12,6 +12,7 @@ from .model import Track
 VGM_RATE = 44100
 _NOTE_DURATION = re.compile(r"^([a-g](?:\+)?)(\d+)$")
 _REST_DURATION = re.compile(r"^(r)(\d+)$")
+_NOTE_COMMAND = re.compile(r"^[a-g](?:[+#-])?")
 
 
 def _text_len(tokens: list[str]) -> int:
@@ -159,6 +160,7 @@ def find_macros(tracks: list[list[str]], limit: int = 26) -> tuple[list[tuple[st
                     (clean or not _has_control(body))
                     and _balanced_loops(list(body))
                     and body[0] not in ("&", "&&", "*")
+                    and sum(1 for token in body if _NOTE_COMMAND.match(token)) >= 3
                     and not any(len(t) == 1 and "A" <= t <= "Z" for t in body)
                 )
                 if valid:

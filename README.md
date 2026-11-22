@@ -94,9 +94,11 @@ Example output:
 5. The first pass renders token streams.  `optimize.py` then chooses a tempo
    grid, applies a common default note length, finds immediately repeated
    token blocks for `[ ... ]n` loops, and emits up to 26 shared `#A`..`#Z`
-   macros.  The second pass writes the compact MML.  SiON tempo is
-   track-local, so every track starts with its own `t<bpm>`; otherwise a
-   long rest on one channel would drift against the others.
+   macros.  A macro body must have at least four commands and at least three
+   note commands, so a repeated single note is not turned into a macro.  The
+   second pass writes the compact MML.  SiON tempo is track-local, so every
+   track starts with its own `t<bpm>`; otherwise a long rest on one channel
+   would drift against the others.
 6. The loop point becomes a `$` in every track. Notes crossing it are split
    into an intro copy and a loop-body copy, and every loop body is padded to
    the same end time.
@@ -131,6 +133,11 @@ Example output:
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used
   for note ends and volume points. DPCM is ignored.
+* **HuC6280 gates**: control/balance changes inside the first 64 samples are
+  folded into the note's attack level; later changes become expression or
+  `na` table envelopes. Sub-frame gates below 100 samples are treated as
+  driver housekeeping and dropped, preventing one-sample percussion clicks.
+  Noise notes use `60 + (noise & 31)` and follow the `$07` period.
 * **SCC, K005289, HuC6280, VSU, Game Boy wave**: 32-frame waveforms are
   normalized to signed 8-bit and deduplicated into `#WAVB` tables. `%4@n`
   selects a table; held-note waveform rewrites become `@n` changes between
@@ -190,7 +197,8 @@ Set `SION_PLAY` to point at a `sion-play` executable if it is not at
   The converter currently emits one track per hardware channel; logs with
   more than 128 simultaneous channels are not supported.
 * HuC6280/VSU/Game Boy noise is approximate (periodic noise, not an exact
-  LFSR/waveform match).  K005289 needs its 0xC3 PROM data block to produce
+  LFSR/waveform match); HuC6280 gates shorter than 100 samples are dropped.
+  K005289 needs its 0xC3 PROM data block to produce
   wavetable notes.
 * Auto tempo only chooses a musical grid; pass `--bpm N` when the source has
   a known tempo.  Optimization is conservative around ties and stops before

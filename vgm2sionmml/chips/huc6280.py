@@ -12,6 +12,8 @@ from .common import ExtractResult, sorted_writes
 HUC_CHANNELS = 6
 HUC_WAVE_LEN = 32
 HUC_REFIT = 735
+HUC_ATTACK_WINDOW = 64
+HUC_MIN_NOTE = 100
 WAVE_BURST = 64
 BALANCE_SCALE = (
     0x00, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F,
@@ -132,12 +134,25 @@ def extract_huc6280(
         for v in range(HUC_CHANNELS):
             settle(v, sample)
 
+    def finish_short_note(note, timeline, sample: int) -> bool:
+        """Discard driver housekeeping clicks below HUC_MIN_NOTE."""
+        if sample - note.start >= HUC_MIN_NOTE:
+            return False
+        note.end = note.start
+        try:
+            timeline.notes.remove(note)
+        except ValueError:
+            pass
+        stats["glitches"] += 1
+        return True
+
     def close(v: int, sample: int) -> None:
         settle(v, sample)
         note = voices[v].note
         if note is None:
             return
         note.close(sample)
+        finish_short_note(note, timelines[v], sample)
         voices[v].note = None
 
     def close_noise(v: int, sample: int) -> None:
@@ -145,6 +160,7 @@ def extract_huc6280(
         if note is None:
             return
         note.close(sample)
+        finish_short_note(note, noise_timelines[v], sample)
         voices[v].noise_note = None
 
     def start_noise(v: int, sample: int) -> None:
@@ -207,15 +223,19 @@ def extract_huc6280(
 
     def update_pitch(v: int, sample: int) -> None:
         voice = voices[v]
-        if voice.note is not None:
+        if voice.note is not None and not (
+            voice.note.end is not None and sample >= voice.note.end
+        ):
             pitch = midi_to_units(freq_to_midi(huc6280_freq(voice.freq, clock)))
-            if sample <= voice.refit_until:
+            if sample < voice.refit_until:
                 voice.note.pitch = pitch
             else:
                 voice.note.add_pitch(sample, pitch)
-        if voice.noise_note is not None:
+        if voice.noise_note is not None and not (
+            voice.noise_note.end is not None and sample >= voice.noise_note.end
+        ):
             pitch = (60 + (voice.noise & 0x1F)) * 64
-            if sample <= voice.refit_until:
+            if sample < voice.refit_until:
                 voice.noise_note.pitch = pitch
             else:
                 voice.noise_note.add_pitch(sample, pitch)
@@ -226,7 +246,12 @@ def extract_huc6280(
         for note in (voice.note, voice.noise_note):
             if note is None:
                 continue
-            if sample <= voice.refit_until:
+            # A register write at the exact close sample belongs to the next
+            # gate, not the note that is ending.  Overwriting the base gain
+            # there made short percussion notes silent from their first tick.
+            if note.end is not None and sample >= note.end:
+                continue
+            if sample < note.start + HUC_ATTACK_WINDOW:
                 note.gain = gain
                 note.pan = pan
             else:
@@ -309,5 +334,9 @@ def extract_huc6280(
                     order=order_base + HUC_CHANNELS + v,
                 )
             )
+    if stats["glitches"]:
+        result.warnings.append(
+            f"HuC6280: ignored {stats['glitches']} sub-frame tone/noise gates"
+        )
     result.stats.update(stats)
     return result
