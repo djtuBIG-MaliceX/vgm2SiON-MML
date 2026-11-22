@@ -78,8 +78,10 @@ Example output:
    time-stamped `ChipWrite` list (plus header clocks). Header 0x20 is the
    loop *length*, not its start, so the loop starts at
    `total_samples - loop_length` (with the 0x1C offset as a fallback).
-   YM2612 PCM commands `0x8n` advance the sample clock by `n` even though
-   their PCM output is out of scope.
+   A dual-chip main-header clock is copied to chip instance 1, so a 4 MHz
+   dual YM2151 does not fall back to the 3.579545 MHz default on its second
+   chip. YM2612 PCM commands `0x8n` advance the sample clock by `n` even
+   though their PCM output is out of scope.
 2. `chips/` contains one register-state decoder per family. Each decoder
    reconstructs key-on/key-off, pitch, patch, TL/gain, pan and LFO state,
    handles one selected chip instance at a time, and emits a monophonic
@@ -194,7 +196,9 @@ Set `SION_PLAY` to point at a `sion-play` executable if it is not at
   semitone-aligned curves may become `nt` `#TABLE` envelopes and gain curves
   may become `na`.  Arbitrary fractional pitch curves stay as ties because
   SiON's `np` frame mapping is not sample-exact.  SiON LFO commands are
-  emitted from OPM/OPN LFO registers when present.
+  emitted from OPM/OPN LFO registers when present; OPM LFOs faster than
+  SiON's one-frame minimum are dropped rather than clamped, because a
+  clamped high-rate AM produced incorrect sidebands on sustained notes.
 * SiON has 256 FM voice slots, 256 custom wavetable slots and 128 tracks.
   Voice/wavetable overflow reuses the nearest timbre and is warned about.
   The converter currently emits one track per hardware channel; logs with

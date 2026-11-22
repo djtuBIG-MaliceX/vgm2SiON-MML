@@ -58,6 +58,19 @@ class VgmParserTests(unittest.TestCase):
         self.assertEqual(vgm.clock("ym2151"), 4000000)
         self.assertEqual(len(vgm.writes), 1)
 
+    def test_dual_opm_header_clock_applies_to_both_instances(self):
+        data = synth.make_vgm(
+            b"",
+            44100,
+            raw_clocks={0x30: 0x40000000 | 4_000_000},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "x.vgm"
+            path.write_bytes(data)
+            vgm = load_vgm(path)
+        self.assertEqual(vgm.clock("ym2151", 0), 4_000_000)
+        self.assertEqual(vgm.clock("ym2151", 1), 4_000_000)
+
 
 class DurationTests(unittest.TestCase):
     def test_note_values(self):
@@ -186,6 +199,15 @@ class ExtractorTests(unittest.TestCase):
         result = convert_vgm(vgm)
         self.assertEqual(result.tracks, 2)
         self.assertEqual(result.notes, 2)
+
+    def test_opm_fast_lfo_is_not_emitted(self):
+        from vgm2sionmml.chips.opm import OpmState
+
+        state = OpmState.new()
+        state.lfrq = 0xC8
+        state.amd = 10
+        state.pms_ams[0] = 3
+        self.assertIsNone(state.lfo(0, 4_000_000))
 
     def test_opn_a4(self):
         cmds = bytearray()

@@ -471,6 +471,28 @@ def load_vgm(path: Path | str) -> VgmFile:
             clocks[(name, instance)] = clock
             instance += 1
 
+    # A dual-chip header clock describes both instances.  Instance 1 has no
+    # separate main-header field, so without this copy it silently falls back
+    # to DEFAULT_CLOCKS (e.g. 3.579545 MHz for a 4 MHz dual YM2151), shifting
+    # every note on the second chip by nearly two semitones.
+    for name, dual in (
+        ("ym2151", ym2151_dual),
+        ("ym2612", ym2612_dual),
+        ("ym2203", ym2203_dual),
+        ("ym2608", ym2608_dual),
+        ("ym2610", ym2610_dual),
+        ("ym3812", flags["ym3812_dual"]),
+        ("ym2413", flags["ym2413_dual"]),
+        ("ay8910", flags["ay8910_dual"]),
+        ("sn76489", flags["sn76489_dual"]),
+        ("nes", flags["nes_dual"]),
+        ("k051649", flags["k051649_dual"]),
+        ("huc6280", flags["huc6280_dual"]),
+        ("vsu", flags["vsu_dual"]),
+    ):
+        if dual and (name, 0) in clocks and (name, 1) not in clocks:
+            clocks[(name, 1)] = clocks[(name, 0)]
+
     # Derived SSG clocks.  The YM2203's AY-compatible core runs at master/2;
     # the YM2608 and YM2610 cores run at master/4 (verified with VGMPlay).
     for fm_name, ssg_name, divisor in (

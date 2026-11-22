@@ -159,7 +159,15 @@ class OpmState:
         coarse = (self.lfrq >> 4) & 7
         fine = self.lfrq & 0x0F
         hz = clock / (64.0 * (2.0 ** coarse) * (16.0 + fine))
-        period = max(1, min(255, int(round(60.0 / hz)))) if hz > 0 else 20
+        if hz <= 0:
+            return None
+        # SiON's @lfo frame is 1/60 s at the fastest.  An OPM LFO above
+        # 60 Hz cannot be represented; clamping it to frame 1 produced a
+        # completely different high-rate AM sideband spectrum on long notes.
+        period_frames = 60.0 / hz
+        if period_frames < 1.0:
+            return None
+        period = max(1, min(255, int(round(period_frames))))
         pitch = int(round((self.pmd / 127.0) * (pms / 7.0) * 128.0)) if pms else 0
         amp = int(round((self.amd / 127.0) * (ams / 3.0) * 48.0)) if ams else 0
         if not pitch and not amp:
