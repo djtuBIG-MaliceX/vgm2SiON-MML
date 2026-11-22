@@ -155,6 +155,11 @@ class _NesApu:
             if ch.env is not None and not ch.const_volume:
                 for t, level in ch.env.points_until(min(sample, limit)):
                     ch.timeline.gain(t, _env_gain(level))
+                    if level == 0:
+                        ch.timeline.note_off(t)
+                        ch.held = False
+                        ch.pending_end = None
+                        break
             if ch.pending_end is not None and sample >= ch.pending_end:
                 ch.timeline.note_off(ch.pending_end)
                 ch.held = False

@@ -484,7 +484,9 @@ class ExtractorTests(unittest.TestCase):
         noise = [t for t in result.tracks if "noise" in t.label]
         self.assertEqual(len(noise), 1)
         note = noise[0].timeline.notes[0]
-        self.assertAlmostEqual(note.pitch / 64.0, 15.0, delta=0.01)
+        # APU noise indices are 1-based and must stay inside the 16-entry
+        # noise pitch table.
+        self.assertAlmostEqual(note.pitch / 64.0, 4.0, delta=0.01)
         self.assertEqual(note.voice.wave, 9)
 
     def test_opl2_channel3_operator_addresses(self):

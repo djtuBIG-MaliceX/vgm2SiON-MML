@@ -131,9 +131,11 @@ Example output:
   this keeps voice identities stable and matches the source's per-note level.
 * **PSG**: tone channels use `%0@0`; noise uses `%0@1`/`%0@2`. AY envelope
   levels are simulated at the envelope step rate and written as `x`
-  expression points. The three AY channels are mixed at VGM's 1/3 headroom
-  so the PSG does not overpower the FM channels. Game Gear stereo becomes
-  `p` values.
+  expression points. Volume 0 and SN attenuation 15 close the current note
+  instead of leaving a silent held note. The three AY channels are mixed at
+  VGM's 1/3 headroom so the PSG does not overpower the FM channels. Game Gear
+  stereo becomes `p` values. AY and SN noise use the 32-entry PSG noise pitch
+  range, not the old out-of-range note offsets.
 * **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle uses `%3@16` (MA3
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used
@@ -142,14 +144,18 @@ Example output:
   folded into the note's attack level; later changes become expression or
   `na` table envelopes. Sub-frame gates below 100 samples are treated as
   driver housekeeping and dropped, preventing one-sample percussion clicks.
-  Noise notes use `60 + (noise & 31)` and follow the `$07` period.
+  Noise notes use an in-range pitch derived from `31 - (noise & 31)` and
+  follow the `$07` period, so low noise settings no longer render in a
+  detached high octave.
 * **SCC, K005289, HuC6280, VSU, Game Boy wave**: 32-frame waveforms are
   normalized to signed 8-bit and deduplicated into `#WAVB` tables. `%4@n`
   selects a table; held-note waveform rewrites become `@n` changes between
   slurred segments. K005289 PROM data comes from its `0xC3` VGM data block.
 * **Game Boy pulse/noise**: pulse duties map to `%8` widths; noise uses
-  `%2@2`. NRx2 envelope steps are written as `x` gain points, and NR51 drives
-  `p`.
+  `%2@2` with a note range derived from NR43. NRx2 envelope steps are written
+  as `x` gain points; a zero down-envelope, DAC-off write, or zero wave level
+  closes the note. NR51 drives `p` per channel, including the initial centering
+  write, rather than the old fixed left bias.
 * **OPL operator levels**: carrier TL is normalized into `x`; non-carrier TL
   is written per note as `iN@tl`, which keeps 15k-note OPL3 logs inside the
   256-voice limit without changing the patch.  OPL multiplier table entries

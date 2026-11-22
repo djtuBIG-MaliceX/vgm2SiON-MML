@@ -20,6 +20,7 @@ from ..pitch import (
     freq_to_midi,
     midi_to_units,
     sn_freq,
+    sn_noise_note,
 )
 from ..vgm import VgmFile
 from .common import ExtractResult, db_gain, sorted_writes
@@ -413,7 +414,7 @@ class _SnChip:
         pan = 4.0 if (left and right) else (0.0 if left else (8.0 if right else 4.0))
         voice = SimpleVoice(0, 2 if (self.channels[3].noise_mode & 4) == 0 else 1,
                             "SN noise")
-        pitch = (12 + (self.channels[3].noise & 7) * 4) * 64
+        pitch = sn_noise_note(self.channels[3].noise & 7) * 64
         if gain > 0.0 and not self.noise_active:
             self.noise_tl.note_on(sample, pitch, voice, gain, pan)
             self.noise_active = True

@@ -131,7 +131,7 @@ def extract_gb(
         volume = voice.env >> 4
         if volume == 0 and not (voice.env & 0x08):
             return
-        gain, p = pan_gain(v)
+        p, gain = pan_gain(v)
         note = timelines[v].note_on(
             sample,
             midi_to_units(freq_to_midi(gb_pulse_freq(voice.period, clock))),
@@ -153,7 +153,7 @@ def extract_gb(
         if not power or not wave_dac or wave_vol == 0:
             return
         idx = waves.add(wave_image())
-        gain, p = pan_gain(2)
+        p, gain = pan_gain(2)
         note = timelines[2].note_on(
             sample,
             midi_to_units(freq_to_midi(gb_wave_freq(voice.period, clock))),
@@ -173,7 +173,7 @@ def extract_gb(
         volume = voice.env >> 4
         if volume == 0 and not (voice.env & 0x08):
             return
-        gain, p = pan_gain(3)
+        p, gain = pan_gain(3)
         note = timelines[3].note_on(
             sample,
             gb_noise_note(voice.noise) * 64,
@@ -210,6 +210,9 @@ def extract_gb(
             if value != voice.env_value:
                 voice.env_value = value
                 note.add_gain(tick, value / 15.0)
+            if value == 0 and not voice.env_dir:
+                close(v, tick)
+                break
 
     def trigger(v: int, sample: int) -> None:
         close(v, sample)
@@ -250,7 +253,7 @@ def extract_gb(
         if reg == NR51:
             pan = val
             for v in range(GB_CHANNELS):
-                gain, p = pan_gain(v)
+                p, gain = pan_gain(v)
                 note = voices[v].note
                 if note is not None:
                     if sample <= voices[v].refit_until:
@@ -287,14 +290,20 @@ def extract_gb(
         if reg in (NR12, NR22, NR42):
             v = 0 if reg == NR12 else 1 if reg == NR22 else 3
             voices[v].env = val
+            vol = (val >> 4) & 0x0F
+            env_dir = (val >> 3) & 1
             note = voices[v].note
             if note is not None:
-                gain, _p = pan_gain(v)
-                vol = (val >> 4) & 0x0F
-                note.add_gain(sample, gain * vol / 15.0)
-                voices[v].env_value = vol
-                voices[v].env_dir = (val >> 3) & 1
-                voices[v].env_period = val & 7
+                if not (val & 0x80) or (vol == 0 and not env_dir):
+                    # DAC off or a zero down-envelope is a gate cut, not a
+                    # silent note that keeps the channel occupied.
+                    close(v, sample)
+                else:
+                    _p, gain = pan_gain(v)
+                    note.add_gain(sample, gain * vol / 15.0)
+                    voices[v].env_value = vol
+                    voices[v].env_dir = env_dir
+                    voices[v].env_period = val & 7
             continue
         if reg in (NR13, NR23, NR33):
             v = 0 if reg == NR13 else 1 if reg == NR23 else 2
@@ -314,8 +323,12 @@ def extract_gb(
             wave_vol = (val >> 5) & 3
             note = voices[2].note
             if note is not None:
-                gain, _p = pan_gain(2)
-                note.add_gain(sample, gain * (15 if wave_vol == 1 else 10 if wave_vol == 2 else 5) / 15.0)
+                if wave_vol == 0:
+                    close(2, sample)
+                else:
+                    _p, gain = pan_gain(2)
+                    level = 1.0 if wave_vol == 1 else 0.5 if wave_vol == 2 else 0.25
+                    note.add_gain(sample, gain * level)
             elif wave_dac and wave_triggered and voices[2].note is None:
                 start_wave(sample)
             continue

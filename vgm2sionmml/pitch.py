@@ -196,17 +196,24 @@ def nes_triangle_freq(timer: int, clock: int) -> float:
 
 
 def ntsc_noise_note(period: int) -> int:
-    """NES noise period (0-15) as the SiON o0c..o1d+ note."""
-    return 12 + max(0, min(15, int(period)))
+    """NES noise period (0-15) as an in-range APU-noise pitch index."""
+    return 1 + max(0, min(15, int(period)))
 
 
 def ay_noise_note(period: int) -> int:
-    """AY noise period (0-31) as the SiON o0c..o2g+ note."""
-    return 12 + max(0, min(31, int(period)))
+    """AY noise period (0-31) as an in-range PSG-noise pitch index.
+
+    The noise pitch table has 32 entries; index 0 is the divide-by-zero
+    corner, index 1 is the fastest and index 31 the slowest.  The old 12+
+    offset ran past the table and made low periods sound like unrelated
+    high notes.
+    """
+    return 1 + max(0, min(30, int(period)))
 
 
 def sn_noise_note(rate: int) -> int:
-    return 12 + max(0, min(7, int(rate))) * 4
+    """SN76489 noise rate (0 fastest .. 7 slowest) as a PSG-noise index."""
+    return 1 + max(0, min(7, int(rate))) * 4
 
 def gb_pulse_freq(period: int, clock: int) -> float:
     """Game Boy pulse channel: clock / (32 * (2048 - period))."""
@@ -229,7 +236,13 @@ def gb_noise_rate(nr43: int) -> float:
 
 
 def gb_noise_note(nr43: int) -> int:
-    """Approximate the noise note used by SiON's periodic-noise module."""
+    """Approximate the noise note in SiON's PCM-rate noise module.
+
+    NR43's clock shift/divisor spans roughly 64:1.  The previous mapping
+    started at note 60, which put every GB noise in the o8-o9 region; the
+    same shape shifted down by five octaves keeps the relative rate changes
+    while staying in the useful noise range.
+    """
     shift = (nr43 >> 4) & 0x0F
     divisor = nr43 & 7
-    return max(0, min(119, 60 + (15 - shift) * 4 + (7 - divisor)))
+    return max(1, min(63, 1 + (15 - shift) * 4 + (7 - divisor)))

@@ -118,6 +118,22 @@ class WavetableTests(unittest.TestCase):
         self.assertTrue(any(n.voice.module == 4 for n in notes))
         self.assertTrue(any(n.voice.module == 2 for n in notes))
 
+    def test_gb_pan_and_zero_volume_cut(self):
+        cmds = bytearray()
+        cmds += synth.gb_apu(0x15, 0x10)  # channel 1 left only
+        cmds += synth.gb_apu(0x02, 0xF0)
+        cmds += synth.gb_apu(0x03, 0x00)
+        cmds += synth.gb_apu(0x04, 0x80)
+        cmds += synth.wait(500)
+        cmds += synth.gb_apu(0x02, 0x00)  # volume 0, enveloping down
+        vgm = self._load(bytes(cmds), 2000, {0x80: 4_194_304})
+        result = extract_gb(vgm, WaveTableLibrary())
+        notes = [n for t in result.tracks for n in t.timeline.notes]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].pan, 0.0)
+        self.assertIsNotNone(notes[0].end)
+        self.assertLessEqual(notes[0].end, 500)
+
     def test_k005289_prom_and_note(self):
         prom = bytes((i & 0x0F for i in range(0x200)))
         cmds = bytearray(synth.data_block(0xC3, 0, prom))

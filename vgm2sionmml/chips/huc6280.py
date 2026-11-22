@@ -176,7 +176,7 @@ def extract_huc6280(
         )
         note = noise_timelines[v].note_on(
             sample,
-            (60 + (voice.noise & 0x1F)) * 64,
+            (1 + (31 - (voice.noise & 0x1F))) * 64,
             SimpleVoice(2, 2, "PCE noise"),
             gain=gain,
             pan=pan,
@@ -234,7 +234,7 @@ def extract_huc6280(
         if voice.noise_note is not None and not (
             voice.noise_note.end is not None and sample >= voice.noise_note.end
         ):
-            pitch = (60 + (voice.noise & 0x1F)) * 64
+            pitch = (1 + (31 - (voice.noise & 0x1F))) * 64
             if sample < voice.refit_until:
                 voice.noise_note.pitch = pitch
             else:
