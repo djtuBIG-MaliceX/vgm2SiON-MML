@@ -490,6 +490,46 @@ class ExtractorTests(unittest.TestCase):
         self.assertEqual(note.op_tl, ((0, 63), (2, 63)))
 
 
+    def test_dual_nes_instances_keep_separate_state(self):
+        def nes_reg(instance: int, reg: int, val: int) -> bytes:
+            return bytes([0xB4, (0x80 if instance else 0) | reg, val])
+
+        cmds = bytearray()
+        for instance, timer in ((0, 1000), (1, 500)):
+            cmds += nes_reg(instance, 0x00, 0x3F)
+            cmds += nes_reg(instance, 0x02, timer & 0xFF)
+            cmds += nes_reg(instance, 0x03, (1 << 3) | ((timer >> 8) & 7))
+        cmds += synth.wait(2000)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(
+            bytes(cmds), 2000, raw_clocks={0x84: 0x40000000 | 1_789_773},
+        )))
+        from vgm2sionmml.chips import extract_nes
+        result0 = extract_nes(vgm, VoiceLibrary(), instance=0)
+        result1 = extract_nes(vgm, VoiceLibrary(), instance=1)
+        self.assertEqual(len(result0.tracks), 1)
+        self.assertEqual(len(result1.tracks), 1)
+        self.assertIn("pulse 1", result0.tracks[0].label)
+        self.assertIn("#2 pulse 1", result1.tracks[0].label)
+        self.assertNotEqual(
+            round(result0.tracks[0].timeline.notes[0].pitch),
+            round(result1.tracks[0].timeline.notes[0].pitch),
+        )
+
+    def test_nes_ultrasonic_timer_is_silent_not_clamped(self):
+        cmds = (
+            synth.nes(0x00, 0x3F)
+            + synth.nes(0x02, 0x00)
+            + synth.nes(0x03, 0x08)
+            + synth.wait(2000)
+        )
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(
+            bytes(cmds), 2000, clocks={0x84: 1_789_773},
+        )))
+        from vgm2sionmml.chips import extract_nes
+        result = extract_nes(vgm, VoiceLibrary())
+        self.assertEqual(result.stats["notes"], 0)
+        self.assertFalse(any("clamped" in w for w in result.warnings))
+
     def test_nes_noise_same_sample_period(self):
         cmds = bytearray()
         cmds += synth.nes(0x0C, 0x1F)

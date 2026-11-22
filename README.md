@@ -147,7 +147,10 @@ Example output:
 * **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle uses `%3@16` (MA3
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used
-  for note ends and volume points. DPCM is ignored.
+  for note ends and volume points. DPCM is ignored. Dual-APU logs keep the
+  two register banks separate via bit 7 of the `0xB4` register byte. Timer 0
+  produces an above-B9/ultrasonic pulse; those gates are emitted as silence
+  rather than clamped to an audible B9 beep.
 * **HuC6280 gates**: control/balance changes inside the first 64 samples are
   folded into the note's attack level; later changes become expression or
   `na` table envelopes. Sub-frame gates below 100 samples are treated as

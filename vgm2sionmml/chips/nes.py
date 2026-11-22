@@ -23,6 +23,7 @@ LENGTH_TABLE = (
 
 DUTY_WAVE = {0: 1, 1: 2, 2: 4, 3: 6}
 NES_SAMPLE_RATE = 44100.0
+NES_MAX_PITCH_UNITS = 119 * 64 + 63
 
 
 def _length_samples(index: int) -> int:
@@ -166,9 +167,22 @@ class _NesApu:
                 ch.pending_end = None
 
     def _note_on(self, ch: _NesChannel, sample: int) -> None:
+        pitch = ch.pitch_units(self.clock)
+        if pitch > NES_MAX_PITCH_UNITS:
+            # A few NES drivers write timer 0 as an ultrasonic/DPCM-adjacent
+            # effect.  SiON cannot represent notes above B9, and clamping it
+            # turns the effect into an audible B9 beep.  Treat the gate as
+            # silent instead of inventing a playable note.
+            if ch.held:
+                ch.timeline.note_off(sample)
+            ch.held = False
+            ch.note_start = sample
+            ch.pending_end = None
+            ch.env = None
+            return
         ch.timeline.note_on(
             sample,
-            ch.pitch_units(self.clock),
+            pitch,
             SimpleVoice(ch.module(), ch.wave(), "NES"),
             ch.gain(),
             4.0,
