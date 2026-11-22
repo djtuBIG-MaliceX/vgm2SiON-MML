@@ -556,6 +556,9 @@ def load_vgm(path: Path | str) -> VgmFile:
                 break
             block_type = raw[pos + 2]
             size = _u32(raw, pos + 3)
+            # For ROM/RAM data blocks bit 31 is the chip-instance flag, not
+            # part of the payload length (VGM spec / libvgm Cmd_DataBlock).
+            size &= 0x7FFFFFFF
             if size > n - pos - 7:
                 size = max(0, n - pos - 7)
             payload = raw[pos + 7 : pos + 7 + size]

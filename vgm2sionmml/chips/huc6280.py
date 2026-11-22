@@ -13,12 +13,15 @@ HUC_CHANNELS = 6
 HUC_WAVE_LEN = 32
 HUC_REFIT = 735
 HUC_ATTACK_WINDOW = 64
+HUC_CUT_LEAD = 64
 HUC_MIN_NOTE = 100
 WAVE_BURST = 64
-BALANCE_SCALE = (
-    0x00, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F,
-    0x10, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D, 0x1F,
-)
+# Ootake/libvgm PCE volume table: each control/balance index step is
+# 1.0869 dB.  The table is indexed by
+# ``control_volume + 2 * (main_balance + channel_balance)``; a zero control
+# volume or zero channel-balance nibble is hard mute.
+PCE_VOLUME_STEP_DB = 1.08689999991
+PCE_VOLUME_MAX_INDEX = 91
 
 REG_SELECT = 0x00
 REG_GLOBAL_BALANCE = 0x01
@@ -58,20 +61,39 @@ class _Voice:
     dirty_start: int | None = None
 
 
+def _pce_amp(volume: int, main_balance: int, channel_balance: int) -> float:
+    """The Ootake/libvgm per-side PCE amplitude for one register state."""
+    volume &= CTRL_VOLUME
+    main_balance &= 0x0F
+    channel_balance &= 0x0F
+    if volume == 0 or channel_balance == 0:
+        return 0.0
+    index = volume + (main_balance + channel_balance) * 2
+    attenuation = (PCE_VOLUME_MAX_INDEX - index) * PCE_VOLUME_STEP_DB
+    return 10.0 ** (-attenuation / 20.0)
+
+
 def _levels(control: int, balance: int, global_balance: int) -> tuple[float, float]:
-    """Return (gain, pan) for the three PCE attenuators."""
-    al = 0x1F - (control & CTRL_VOLUME)
-    ga_l = 0x1F - BALANCE_SCALE[(global_balance >> 4) & 0x0F]
-    ga_r = 0x1F - BALANCE_SCALE[global_balance & 0x0F]
-    bl = 0x1F - BALANCE_SCALE[(balance >> 4) & 0x0F]
-    br = 0x1F - BALANCE_SCALE[balance & 0x0F]
-    left = 0x1F - min(0x1F, ga_l + bl + al)
-    right = 0x1F - min(0x1F, ga_r + br + al)
+    """Return (gain, pan) using the PCE logarithmic volume table.
+
+    The HuC6280 sums a 5-bit control volume and the main/channel balance
+    nibbles into one table index.  Mapping the resulting left/right
+    amplitudes as a peak gain plus pan reproduces the chip's relative level;
+    a linear ``level / 31`` mapping is about 2x too loud for normal PCE
+    patches.
+    """
+    volume = control & CTRL_VOLUME
+    main_l = (global_balance >> 4) & 0x0F
+    main_r = global_balance & 0x0F
+    bal_l = (balance >> 4) & 0x0F
+    bal_r = balance & 0x0F
+    left = _pce_amp(volume, main_l, bal_l)
+    right = _pce_amp(volume, main_r, bal_r)
     peak = max(left, right)
-    if peak <= 0:
+    if peak <= 0.0:
         return 0.0, 4.0
     pan = 4.0 + 4.0 * (right - left) / peak
-    return peak / 0x1F, pan
+    return peak, pan
 
 
 def extract_huc6280(
@@ -146,11 +168,30 @@ def extract_huc6280(
         stats["glitches"] += 1
         return True
 
+    def cut_note(note, sample: int) -> None:
+        """Make a hardware gate-off audible in SiON's KS/SCC channel.
+
+        The PCE has no release register: clearing the gate stops the waveform
+        immediately.  SiON's ``%4`` wavetable channel runs a KS decay tail on
+        note-off, so add an explicit zero level one sample before the gate
+        closes.  Without this, adjacent melody notes sound tied.
+        """
+        if note is None or sample <= note.start + 1:
+            return
+        # Leave a short lead before the gate closes so the zero tick is
+        # strictly inside the note after MML quantisation, and discard any
+        # source envelope point that would raise the level again before the
+        # gate.
+        cut = max(note.start + 1, sample - HUC_CUT_LEAD)
+        note.gain_points = [p for p in note.gain_points if p[0] < cut]
+        note.add_gain(cut, 0.0)
+
     def close(v: int, sample: int) -> None:
         settle(v, sample)
         note = voices[v].note
         if note is None:
             return
+        cut_note(note, sample)
         note.close(sample)
         finish_short_note(note, timelines[v], sample)
         voices[v].note = None
@@ -159,6 +200,7 @@ def extract_huc6280(
         note = voices[v].noise_note
         if note is None:
             return
+        cut_note(note, sample)
         note.close(sample)
         finish_short_note(note, noise_timelines[v], sample)
         voices[v].noise_note = None
@@ -174,6 +216,10 @@ def extract_huc6280(
         gain, pan = _levels(
             voice.control, voice.balance, voice.global_balance
         )
+        # Ootake halves the PCE noise output at noise period 0 (the $1F
+        # register value); the normal LFSR level is 18/32768.
+        if (voice.noise & 0x1F) == 0x1F:
+            gain *= 0.5
         note = noise_timelines[v].note_on(
             sample,
             (1 + (31 - (voice.noise & 0x1F))) * 64,
@@ -243,19 +289,23 @@ def extract_huc6280(
     def update_levels(v: int, sample: int) -> None:
         voice = voices[v]
         gain, pan = _levels(voice.control, voice.balance, voice.global_balance)
+        noise_gain = gain
+        if (voice.noise & 0x1F) == 0x1F:
+            noise_gain *= 0.5
         for note in (voice.note, voice.noise_note):
             if note is None:
                 continue
+            note_gain = noise_gain if note is voice.noise_note else gain
             # A register write at the exact close sample belongs to the next
             # gate, not the note that is ending.  Overwriting the base gain
             # there made short percussion notes silent from their first tick.
             if note.end is not None and sample >= note.end:
                 continue
             if sample < note.start + HUC_ATTACK_WINDOW:
-                note.gain = gain
+                note.gain = note_gain
                 note.pan = pan
             else:
-                note.add_gain(sample, gain)
+                note.add_gain(sample, note_gain)
                 note.add_pan(sample, pan)
 
     for w in writes:

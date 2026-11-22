@@ -81,7 +81,10 @@ Example output:
    A dual-chip main-header clock is copied to chip instance 1, so a 4 MHz
    dual YM2151 does not fall back to the 3.579545 MHz default on its second
    chip. YM2612 PCM commands `0x8n` advance the sample clock by `n` even
-   though their PCM output is out of scope.
+   though their PCM output is out of scope. For ROM/RAM data blocks, bit 31
+   of the size field selects the chip instance and is masked before the
+   payload is skipped; otherwise an OKIM6295 ROM block can look like a 2 GiB
+   block and hide the YM2151 commands that follow it.
 2. `chips/` contains one register-state decoder per family. Each decoder
    reconstructs key-on/key-off, pitch, patch, TL/gain, pan and LFO state,
    handles one selected chip instance at a time, and emits a monophonic
@@ -151,7 +154,12 @@ Example output:
   driver housekeeping and dropped, preventing one-sample percussion clicks.
   Noise notes use an in-range pitch derived from `31 - (noise & 31)` and
   follow the `$07` period, so low noise settings no longer render in a
-  detached high octave.
+  detached high octave. WAVE/noise volume follows libvgm/Ootake's 1.0869 dB
+  per-step table (indexed by control volume plus main and channel balance),
+  rather than a linear `level / 31`; a channel-balance nibble of 0 is a hard
+  mute. Each hardware gate-off also inserts a zero expression a short tick
+  before the note end because SiON's `%4` channel applies a KS release tail
+  that the HuC6280 does not have.
 * **SCC, K005289, HuC6280, VSU, Game Boy wave**: 32-frame waveforms are
   normalized to signed 8-bit and deduplicated into `#WAVB` tables. `%4@n`
   selects a table; held-note waveform rewrites become `@n` changes between
@@ -214,7 +222,7 @@ Set `SION_PLAY` to point at a `sion-play` executable if it is not at
   Voice/wavetable overflow reuses the nearest timbre and is warned about.
   The converter currently emits one track per hardware channel; logs with
   more than 128 simultaneous channels are not supported.
-* HuC6280/VSU/Game Boy noise is approximate (periodic noise, not an exact
+* HuC6280/VSU/Game Boy noise is approximate (SiON noise tables, not an exact
   LFSR/waveform match); HuC6280 gates shorter than 100 samples are dropped.
   K005289 needs its 0xC3 PROM data block to produce
   wavetable notes.

@@ -46,6 +46,25 @@ class VgmParserTests(unittest.TestCase):
         self.assertEqual(vgm.writes[-1].sample, 16)
         self.assertIn("DAC/PCM", " ".join(vgm.warnings))
 
+    def test_rom_data_block_size_high_bit_is_chip_id(self):
+        # OKIM6295 ROM blocks (type 0x8B) use bit 31 of the size field as
+        # the chip-instance flag.  It must not be mistaken for a 2 GiB block.
+        commands = (
+            bytes([0x67, 0x66, 0x8B])
+            + (0x80000008).to_bytes(4, "little")
+            + b"12345678"
+            + synth.opm(0x08, 0x78)
+            + synth.wait(100)
+        )
+        data = synth.make_vgm(commands, 100, clocks={0x30: 4_000_000})
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "x.vgm"
+            path.write_bytes(data)
+            vgm = load_vgm(path)
+        self.assertEqual(len(vgm.writes), 1)
+        self.assertEqual(vgm.writes[0].chip, "ym2151")
+        self.assertEqual((vgm.writes[0].reg, vgm.writes[0].val), (0x08, 0x78))
+
     def test_vgz_roundtrip(self):
         import gzip
 

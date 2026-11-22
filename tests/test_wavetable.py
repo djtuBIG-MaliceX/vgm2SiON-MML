@@ -61,6 +61,34 @@ class WavetableTests(unittest.TestCase):
         self.assertEqual(notes[0].voice.module, 4)
         self.assertAlmostEqual(notes[0].pitch / 64.0, 69.0, delta=0.08)
 
+    def test_huc6280_volume_uses_ootake_table(self):
+        from vgm2sionmml.chips.huc6280 import _levels
+
+        # Control volume 31, main balance 15/15, channel balance 11/12.
+        gain, _pan = _levels(0x9F, 0xBC, 0xFF)
+        self.assertAlmostEqual(gain, 0.47198695985201455, places=6)
+        self.assertLess(_levels(0x9F, 0x99, 0xFF)[0], gain)
+        self.assertEqual(_levels(0x9F, 0xBC, 0xFF)[0], 0.47198695985201455)
+        self.assertEqual(_levels(0x80, 0xBC, 0xFF)[0], 0.0)
+
+    def test_huc6280_gate_off_cuts_ks_release(self):
+        cmds = bytearray()
+        cmds += synth.huc(0, 0)
+        for i in range(32):
+            cmds += synth.huc(6, i % 16)
+        cmds += synth.huc(2, 254) + synth.huc(3, 0)
+        cmds += synth.huc(5, 0xFF)
+        cmds += synth.huc(4, 0x9F)
+        cmds += synth.wait(1000)
+        cmds += synth.huc(4, 0x40)
+        cmds += synth.wait(1000)
+        vgm = self._load(bytes(cmds), 2000, {0xA4: 3_579_545})
+        result = extract_huc6280(vgm, WaveTableLibrary())
+        notes = [n for t in result.tracks for n in t.timeline.notes]
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].gain_points)
+        self.assertEqual(notes[0].gain_points[-1][1], 0.0)
+
     def test_huc6280_drops_sub_frame_percussion_gates(self):
         cmds = bytearray()
         cmds += synth.huc(0, 5)
