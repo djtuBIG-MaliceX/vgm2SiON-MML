@@ -359,9 +359,26 @@ class ExtractorTests(unittest.TestCase):
         result = convert_vgm(vgm)
         note = _only_note(vgm, "ay")
         self.assertAlmostEqual(note.pitch / 64.0, 69.0, delta=0.05)
-        # A standalone AY log has no FM partner and keeps full output.
         self.assertAlmostEqual(note.gain, 1.0, delta=0.01)
         self.assertIn("%0", result.text)
+
+    def test_ay_keeps_level_with_fm_present(self):
+        cmds = bytearray()
+        for reg, val in ((0, 0xFE), (1, 0), (7, 0xFE), (8, 15), (9, 0), (10, 0)):
+            cmds += synth.ay8910(reg, val)
+        cmds += synth.ym2612(0, 0x22, 0x00)
+        cmds += synth.wait(44100) + synth.ay8910(8, 0)
+        vgm = load_vgm(
+            self._tmp_vgm(
+                synth.make_vgm(
+                    bytes(cmds),
+                    44100,
+                    clocks={0x74: 1789772, 0x2C: 7670453},
+                )
+            )
+        )
+        note = _only_note(vgm, "ay")
+        self.assertAlmostEqual(note.gain, 1.0, delta=0.01)
 
     def test_sn76489_gain_curve(self):
         from vgm2sionmml.chips.psg import _sn_gain

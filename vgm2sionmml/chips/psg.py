@@ -23,17 +23,17 @@ from ..pitch import (
     sn_noise_note,
 )
 from ..vgm import VgmFile
-from .common import ExtractResult, db_gain, has_fm_chip, sorted_writes
+from .common import ExtractResult, db_gain, sorted_writes
 
 
-def _ay_gain(level: int, *, headroom: bool = False) -> float:
+def _ay_gain(level: int) -> float:
     level = max(0, min(15, int(level)))
     if level <= 0:
         return 0.0
-    # The real chip sums its three channels into one mono output.  VGM
-    # players normalize that mix by 1/3 so it doesn't bury a simultaneous FM
-    # part.  A standalone AY log has no such part and keeps its full level.
-    return db_gain((15 - level) * 1.5) / (3.0 if headroom else 1.0)
+    # Keep the AY's 1.5 dB attenuation curve.  Do not divide by the chip's
+    # three-channel mix headroom; SiON sums the emitted tracks itself and
+    # source-player normalization is not part of the conversion.
+    return db_gain((15 - level) * 1.5)
 
 
 def _sn_gain(atten: int) -> float:
@@ -107,13 +107,10 @@ class _AyEnv:
 
 
 class _AyChip:
-    def __init__(
-        self, clock: int, label: str, order_base: int, *, headroom: bool = False
-    ) -> None:
+    def __init__(self, clock: int, label: str, order_base: int) -> None:
         self.clock = clock
         self.label = label
         self.order_base = order_base
-        self.headroom = headroom
         self.regs = bytearray(16)
         self.regs[7] = 0xFF
         self.tone = [
@@ -151,8 +148,8 @@ class _AyChip:
 
     def volume_gain(self, ch: int) -> float:
         if self.envelope_enabled(ch):
-            return _ay_gain(self.env.level, headroom=self.headroom)
-        return _ay_gain(self.volume(ch), headroom=self.headroom)
+            return _ay_gain(self.env.level)
+        return _ay_gain(self.volume(ch))
 
     def has_signal(self, ch: int) -> bool:
         if self.envelope_enabled(ch):
@@ -220,7 +217,7 @@ class _AyChip:
             if not self.env_mode[ch]:
                 continue
             for t, level in self.env.levels_until(sample):
-                gain = _ay_gain(level, headroom=self.headroom)
+                gain = _ay_gain(level)
                 if self.tone_active[ch]:
                     self.tone[ch].gain(t, gain * (0.7 if self.noise_active[ch] else 1.0))
                 if self.noise_active[ch]:
@@ -316,7 +313,7 @@ def extract_ay8910(
         clock = 1_789_772
     name = label or ("AY-3-8910" if chip == "ay8910" else chip.upper())
     chip_label = name if instance == 0 else f"{name} #{instance + 1}"
-    ay = _AyChip(clock, chip_label, order_base, headroom=has_fm_chip(vgm))
+    ay = _AyChip(clock, chip_label, order_base)
     for w in writes:
         ay.apply_write(w.sample, w.reg, w.val)
     ay.finish(vgm.total_samples)
