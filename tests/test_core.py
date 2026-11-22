@@ -359,16 +359,33 @@ class ExtractorTests(unittest.TestCase):
         result = convert_vgm(vgm)
         note = _only_note(vgm, "ay")
         self.assertAlmostEqual(note.pitch / 64.0, 69.0, delta=0.05)
-        # AY mixes three channels into one normalized output.
-        self.assertAlmostEqual(note.gain, 1.0 / 3.0, delta=0.01)
+        # A standalone AY log has no FM partner and keeps full output.
+        self.assertAlmostEqual(note.gain, 1.0, delta=0.01)
         self.assertIn("%0", result.text)
 
     def test_sn76489_channel_headroom(self):
         from vgm2sionmml.chips.psg import _sn_gain
 
-        self.assertEqual(_sn_gain(0), 0.25)
-        self.assertEqual(_sn_gain(15), 0.0)
-        self.assertLess(_sn_gain(8), _sn_gain(0))
+        self.assertEqual(_sn_gain(0), 1.0)
+        self.assertEqual(_sn_gain(0, headroom=True), 0.25)
+        self.assertEqual(_sn_gain(15, headroom=True), 0.0)
+        self.assertLess(_sn_gain(8, headroom=True), _sn_gain(0, headroom=True))
+
+    def test_sn76489_headroom_only_when_fm_present(self):
+        cmds = bytearray([0x50, 0x8E, 0x50, 0x0F, 0x50, 0x90])
+        cmds += synth.ym2612(0, 0x22, 0x00)
+        cmds += synth.wait(44100) + bytes([0x50, 0x9F])
+        vgm = load_vgm(
+            self._tmp_vgm(
+                synth.make_vgm(
+                    bytes(cmds),
+                    44100,
+                    clocks={0x0C: 3579545, 0x2C: 7670453},
+                )
+            )
+        )
+        note = _only_note(vgm, "sn")
+        self.assertAlmostEqual(note.gain, 0.25, delta=0.01)
 
     def test_sn76489_a4(self):
         cmds = bytearray([0x50, 0x8E, 0x50, 0x0F, 0x50, 0x90])

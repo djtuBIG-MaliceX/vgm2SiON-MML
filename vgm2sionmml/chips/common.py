@@ -8,6 +8,30 @@ from dataclasses import dataclass, field
 from ..model import Track, VoiceLibrary
 from ..vgm import VgmFile
 
+FM_CHIPS = frozenset(
+    {
+        "ym2151",
+        "ym2203",
+        "ym2612",
+        "ym2608",
+        "ym2610",
+        "ym3812",
+        "ym3526",
+        "ymf262",
+        "ym2413",
+    }
+)
+
+
+def has_fm_chip(vgm: VgmFile) -> bool:
+    """Whether the log also contains an FM chip.
+
+    PSG chips are mixed by VGM players with headroom so they cannot bury a
+    simultaneous FM chip.  That headroom is only meaningful when an FM chip
+    is present; a standalone PSG log should use the chip's full output.
+    """
+    return any(w.chip in FM_CHIPS for w in vgm.writes)
+
 
 @dataclass
 class ExtractResult:

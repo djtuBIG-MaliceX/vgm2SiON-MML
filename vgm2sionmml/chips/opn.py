@@ -43,6 +43,17 @@ SIOPM_CARRIERS = {
 }
 LFO_RATES = (3.98, 5.56, 6.66, 7.37, 8.00, 10.0, 13.3, 16.0)
 
+# SiON sums one track per hardware voice.  Genesis OPN logs commonly sit
+# around 9 dB below OPM logs in carrier TL, and VGM players hide that by
+# normalizing every enabled device (including an otherwise unused PSG half).
+# Apply a fixed family-level reference instead; this is not a per-song gain
+# and deliberately ignores chip count / source playback normalization.
+OPN_OUTPUT_TRIM = 3.0
+
+
+def _opn_gain(gain: float) -> float:
+    return max(0.0, min(1.0, gain * OPN_OUTPUT_TRIM))
+
 
 @dataclass
 class OpnOp:
@@ -344,7 +355,7 @@ def extract_opn(
                         sample,
                         pitch,
                         voice,
-                        gain=pan_gain * db_gain(tl0 * 0.75),
+                        gain=_opn_gain(pan_gain * db_gain(tl0 * 0.75)),
                         pan=pan,
                     )
                     base_tl[ch] = tl0
@@ -393,8 +404,8 @@ def extract_opn(
                     timelines[ch].pan(sample, pan)
                     if sounding[ch]:
                         cur = state.carrier_tl(ch)
-                        gain = 0.0 if mute[ch] else max(
-                            0.0, min(1.0, db_gain(cur * 0.75))
+                        gain = 0.0 if mute[ch] else _opn_gain(
+                            db_gain(cur * 0.75)
                         )
                         timelines[ch].gain(sample, gain)
                     if r == 0xB4 and sounding[ch]:
@@ -411,8 +422,8 @@ def extract_opn(
                     continue
                 if 0x40 <= r <= 0x4F and sounding[ch]:
                     cur = state.carrier_tl(ch)
-                    gain = 0.0 if mute[ch] else max(
-                        0.0, min(1.0, db_gain(cur * 0.75))
+                    gain = 0.0 if mute[ch] else _opn_gain(
+                        db_gain(cur * 0.75)
                     )
                     timelines[ch].gain(sample, gain)
                     stats["tl_moves"] += 1

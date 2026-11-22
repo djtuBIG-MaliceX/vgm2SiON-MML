@@ -51,7 +51,7 @@ Options:
 --no-optimize      disable macro/loop/default-length and table-envelope optimization
 --title TEXT        override #TITLE
 --max-voices N      SiON FM voice slot cap (default 256)
---gain F            master gain multiplier (default 0.75; 1.0 keeps source level)
+--gain F            master gain multiplier (default 0.75; 1.0 keeps the converted mix level)
 --quiet             only errors
 ```
 
@@ -137,14 +137,18 @@ Example output:
   16-18 and the `$36`-`$38` level nibbles.
 * Carrier-level floors are moved out of FM voices into `x` expression values;
   this keeps voice identities stable and matches the source's per-note level.
+  OPN carrier levels are brought to the same SiON family reference as
+  OPM/OPL with a fixed `3x` trim.  This is not a per-song or chip-count
+  normalization; it compensates Genesis patch levels that sit below OPM
+  levels and avoids inheriting VGMPlay's whole-log volume normalization.
 * **PSG**: tone channels use `%0@0`; noise uses `%0@1`/`%0@2`. AY envelope
   levels are simulated at the envelope step rate and written as `x`
   expression points. Volume 0 and SN attenuation 15 close the current note
-  instead of leaving a silent held note. The three AY channels use VGM's 1/3
-  headroom, and each SN76489 voice uses the chip's 1/4 four-voice headroom;
-  without that, the Genesis PSG overpowers the YM2612. Game Gear stereo
-  becomes `p` values. AY and SN noise use the 32-entry PSG noise pitch range,
-  not the old out-of-range note offsets.
+  instead of leaving a silent held note. The AY 1/3 and SN76489 1/4 headroom
+  is applied only when the same VGM contains an FM chip; standalone PSG logs
+  keep their full level. Game Gear stereo becomes `p` values. AY and SN
+  noise use the 32-entry PSG noise pitch range, not the old out-of-range
+  note offsets.
 * **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle uses `%3@16` (MA3
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used

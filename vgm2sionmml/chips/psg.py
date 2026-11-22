@@ -23,28 +23,28 @@ from ..pitch import (
     sn_noise_note,
 )
 from ..vgm import VgmFile
-from .common import ExtractResult, db_gain, sorted_writes
+from .common import ExtractResult, db_gain, has_fm_chip, sorted_writes
 
 
-def _ay_gain(level: int) -> float:
+def _ay_gain(level: int, *, headroom: bool = False) -> float:
     level = max(0, min(15, int(level)))
     if level <= 0:
         return 0.0
     # The real chip sums its three channels into one mono output.  VGM
-    # players normalize that mix by 1/3; without the same headroom three
-    # full-scale SiON tracks make the PSG drown the FM channels.
-    return db_gain((15 - level) * 1.5) / 3.0
+    # players normalize that mix by 1/3 so it doesn't bury a simultaneous FM
+    # part.  A standalone AY log has no such part and keeps its full level.
+    return db_gain((15 - level) * 1.5) / (3.0 if headroom else 1.0)
 
 
-def _sn_gain(atten: int) -> float:
+def _sn_gain(atten: int, *, headroom: bool = False) -> float:
     atten = max(0, min(15, int(atten)))
     if atten >= 15:
         return 0.0
     # The SN76489 mixer gives each of its four voices 1/4 of the output
-    # range before the chip's 0.5 player volume.  SiON emits one track per
-    # voice, so without the 1/4 channel share the PSG overwhelms the YM2612
-    # on Genesis logs even though the attenuation curve itself is correct.
-    return db_gain(atten * 2.0) / 4.0
+    # range.  SiON emits one track per voice, so use the same headroom when
+    # an FM chip shares the log; without it the Genesis PSG overpowers the
+    # YM2612.  Standalone PSG logs keep the chip's full output.
+    return db_gain(atten * 2.0) / (4.0 if headroom else 1.0)
 
 
 def _ay_voice_noise() -> SimpleVoice:
@@ -108,10 +108,13 @@ class _AyEnv:
 
 
 class _AyChip:
-    def __init__(self, clock: int, label: str, order_base: int) -> None:
+    def __init__(
+        self, clock: int, label: str, order_base: int, *, headroom: bool = False
+    ) -> None:
         self.clock = clock
         self.label = label
         self.order_base = order_base
+        self.headroom = headroom
         self.regs = bytearray(16)
         self.regs[7] = 0xFF
         self.tone = [
@@ -149,8 +152,8 @@ class _AyChip:
 
     def volume_gain(self, ch: int) -> float:
         if self.envelope_enabled(ch):
-            return _ay_gain(self.env.level)
-        return _ay_gain(self.volume(ch))
+            return _ay_gain(self.env.level, headroom=self.headroom)
+        return _ay_gain(self.volume(ch), headroom=self.headroom)
 
     def has_signal(self, ch: int) -> bool:
         if self.envelope_enabled(ch):
@@ -218,7 +221,7 @@ class _AyChip:
             if not self.env_mode[ch]:
                 continue
             for t, level in self.env.levels_until(sample):
-                gain = _ay_gain(level)
+                gain = _ay_gain(level, headroom=self.headroom)
                 if self.tone_active[ch]:
                     self.tone[ch].gain(t, gain * (0.7 if self.noise_active[ch] else 1.0))
                 if self.noise_active[ch]:
@@ -314,7 +317,7 @@ def extract_ay8910(
         clock = 1_789_772
     name = label or ("AY-3-8910" if chip == "ay8910" else chip.upper())
     chip_label = name if instance == 0 else f"{name} #{instance + 1}"
-    ay = _AyChip(clock, chip_label, order_base)
+    ay = _AyChip(clock, chip_label, order_base, headroom=has_fm_chip(vgm))
     for w in writes:
         ay.apply_write(w.sample, w.reg, w.val)
     ay.finish(vgm.total_samples)
@@ -336,10 +339,13 @@ class _SnChannel:
 
 
 class _SnChip:
-    def __init__(self, clock: int, label: str, order_base: int) -> None:
+    def __init__(
+        self, clock: int, label: str, order_base: int, *, headroom: bool = False
+    ) -> None:
         self.clock = clock
         self.label = label
         self.order_base = order_base
+        self.headroom = headroom
         self.channels = [_SnChannel() for _ in range(4)]
         self.latched_channel = 0
         self.latched_volume = False
@@ -367,7 +373,7 @@ class _SnChip:
 
     def tone_gain(self, ch: int) -> tuple[float, float]:
         att = self.channels[ch].attenuation
-        gain = _sn_gain(att) if att < 15 else 0.0
+        gain = _sn_gain(att, headroom=self.headroom) if att < 15 else 0.0
         pan, stereo_gain = self.pan_gain(ch)
         return pan, gain * stereo_gain
 
@@ -382,7 +388,9 @@ class _SnChip:
             return 0.0
         # Noise is a single mono source on the real chip; use the average of
         # the two enable bits as the gain, and pan by whichever side is on.
-        return _sn_gain(att) * (1.0 if (left and right) else 0.75)
+        return _sn_gain(att, headroom=self.headroom) * (
+            1.0 if (left and right) else 0.75
+        )
 
     def refresh(self, sample: int) -> None:
         for ch in range(3):
@@ -530,7 +538,7 @@ def extract_sn76489(
         return result
     clock = vgm.clock("sn76489", instance) or 3_579_545
     label = "SN76489" if instance == 0 else f"SN76489 #{instance + 1}"
-    chip = _SnChip(clock, label, order_base)
+    chip = _SnChip(clock, label, order_base, headroom=has_fm_chip(vgm))
     for w in writes:
         if w.reg == 1:
             chip.set_stereo(w.val & 0xFF)
