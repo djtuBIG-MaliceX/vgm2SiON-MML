@@ -355,11 +355,19 @@ def _opl_kind(kind: str) -> tuple[bool, bool]:
 
 
 def extract_opl(
-    vgm: VgmFile, voices: VoiceLibrary, kind: str, order_base: int = 0
+    vgm: VgmFile,
+    voices: VoiceLibrary,
+    kind: str,
+    order_base: int = 0,
+    instance: int | None = None,
 ) -> ExtractResult:
     result = ExtractResult()
     opl3, opl2 = _opl_kind(kind)
-    instances = sorted({w.chip_id for w in vgm.writes if w.chip == kind}) or [0]
+    instances = (
+        [instance]
+        if instance is not None
+        else sorted({w.chip_id for w in vgm.writes if w.chip == kind}) or [0]
+    )
     total_channels = 18 if opl3 else 9
     stats = {"notes": 0, "keyons": 0, "tl_moves": 0, "four_op_notes": 0, "rhythm_skips": 0}
     rhythm_seen = False

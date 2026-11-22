@@ -81,8 +81,9 @@ Example output:
    YM2612 PCM commands `0x8n` advance the sample clock by `n` even though
    their PCM output is out of scope.
 2. `chips/` contains one register-state decoder per family. Each decoder
-   reconstructs key-on/key-off, pitch, patch, TL/gain, pan and LFO state and
-   emits a monophonic `ChannelTimeline`.
+   reconstructs key-on/key-off, pitch, patch, TL/gain, pan and LFO state,
+   handles one selected chip instance at a time, and emits a monophonic
+   `ChannelTimeline`.
 3. `model.py` keeps notes with control points for pitch, gain, pan, waveform
    changes and OPL operator levels.
 4. `mml.py` quantizes event times to SiON's 1920-tick whole note, splits held
@@ -128,7 +129,9 @@ Example output:
   this keeps voice identities stable and matches the source's per-note level.
 * **PSG**: tone channels use `%0@0`; noise uses `%0@1`/`%0@2`. AY envelope
   levels are simulated at the envelope step rate and written as `x`
-  expression points. Game Gear stereo becomes `p` values.
+  expression points. The three AY channels are mixed at VGM's 1/3 headroom
+  so the PSG does not overpower the FM channels. Game Gear stereo becomes
+  `p` values.
 * **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle uses `%3@16` (MA3
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used

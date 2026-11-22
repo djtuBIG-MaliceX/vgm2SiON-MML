@@ -29,7 +29,10 @@ def _ay_gain(level: int) -> float:
     level = max(0, min(15, int(level)))
     if level <= 0:
         return 0.0
-    return db_gain((15 - level) * 1.5)
+    # The real chip sums its three channels into one mono output.  VGM
+    # players normalize that mix by 1/3; without the same headroom three
+    # full-scale SiON tracks make the PSG drown the FM channels.
+    return db_gain((15 - level) * 1.5) / 3.0
 
 
 def _sn_gain(atten: int) -> float:

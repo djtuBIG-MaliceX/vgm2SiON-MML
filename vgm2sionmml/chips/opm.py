@@ -179,7 +179,9 @@ def _apply_burst(state: OpmState, writes: list, start: int, ch: int) -> OpmState
             continue
         if (reg & 7) != ch:
             continue
-        if 0x40 <= reg <= 0xDF or 0x60 <= reg <= 0x7F:
+        if 0x40 <= reg <= 0xFF:
+            # 0xE0..0xFF carries D1L/RR; some drivers send the complete
+            # operator block after key-on, so it belongs to this burst too.
             snap.write(reg, w.val)
         elif 0x28 <= reg <= 0x37:
             snap.write(reg, w.val)
@@ -187,10 +189,17 @@ def _apply_burst(state: OpmState, writes: list, start: int, ch: int) -> OpmState
 
 
 def extract_ym2151(
-    vgm: VgmFile, voices: VoiceLibrary, order_base: int = 0
+    vgm: VgmFile,
+    voices: VoiceLibrary,
+    order_base: int = 0,
+    instance: int | None = None,
 ) -> ExtractResult:
     result = ExtractResult()
-    instances = sorted({w.chip_id for w in vgm.writes if w.chip == "ym2151"}) or [0]
+    instances = (
+        [instance]
+        if instance is not None
+        else sorted({w.chip_id for w in vgm.writes if w.chip == "ym2151"}) or [0]
+    )
     stats = {"notes": 0, "keyons": 0, "tl_moves": 0, "lfo_notes": 0, "mute_moves": 0}
     for instance in instances:
         writes = sorted_writes(vgm, "ym2151", instance)
@@ -231,6 +240,17 @@ def extract_ym2151(
                 if mask and newly_on:
                     snap = _apply_burst(state, writes, i, ch)
                     alg, fb, ops = snap.patch(ch)
+                    if mask != 0x0F:
+                        # The SS bits of $08 key operators in SiON's
+                        # M1,C1,M2,C2 (= our output) order.  An operator that
+                        # was not keyed never starts its envelope; TL 7F is
+                        # the closest static equivalent.
+                        ops = tuple(
+                            op
+                            if mask & (1 << i)
+                            else op[:5] + (0x7F,) + op[6:]
+                            for i, op in enumerate(ops)
+                        )
                     ops, tl0 = normalize_carrier_levels(ops, CARRIERS.get(alg, (3,)), 5)
                     voice = FmVoice("opm", alg, fb, ops)
                     pitch = opm_kc_units(snap.kc[ch], snap.kf[ch], clock)

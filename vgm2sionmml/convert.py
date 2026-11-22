@@ -104,14 +104,16 @@ def convert_vgm(
     # YM2151 (OPM)
     for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "ym2151"}):
         absorb(
-            extract_ym2151(vgm, voices, order_base=order),
+            extract_ym2151(vgm, voices, order_base=order, instance=instance),
             f"ym2151_{instance}",
         )
 
     # OPN family, then its AY-compatible SSG half.
     for kind in OPN_KINDS:
         for instance in sorted({w.chip_id for w in vgm.writes if w.chip == kind}):
-            fm = extract_opn(vgm, voices, kind, order_base=order)
+            fm = extract_opn(
+                vgm, voices, kind, order_base=order, instance=instance
+            )
             absorb(fm, f"{kind}_{instance}")
             ssg_name = f"{kind}_ssg"
             if any(w.chip == ssg_name and w.chip_id == instance for w in vgm.writes):
@@ -144,7 +146,9 @@ def convert_vgm(
     for kind in OPL_KINDS:
         for instance in sorted({w.chip_id for w in vgm.writes if w.chip == kind}):
             absorb(
-                extract_opl(vgm, voices, kind, order_base=order),
+                extract_opl(
+                    vgm, voices, kind, order_base=order, instance=instance
+                ),
                 f"{kind}_{instance}",
             )
 

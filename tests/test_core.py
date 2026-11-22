@@ -7,7 +7,7 @@ from pathlib import Path
 from vgm2sionmml.convert import ConversionError, convert_vgm
 from vgm2sionmml.mml import duration_token, render_song, ticks_from_samples
 from vgm2sionmml.model import FmVoice, Note, Song, Track, VoiceLibrary
-from vgm2sionmml.vgm import load_vgm
+from vgm2sionmml.vgm import ChipWrite, VgmFile, load_vgm
 from tests import synth
 
 
@@ -161,6 +161,32 @@ class ExtractorTests(unittest.TestCase):
         self.assertIn("a2", result.text)
         self.assertIn("%6", result.text)
 
+    def test_dual_opm_instances_are_not_duplicated(self):
+        # A VGM may contain two YM2151 instances.  convert_vgm calls the
+        # extractor once per instance; the extractor must honour that
+        # selection instead of returning both instances on each call.
+        writes = []
+        for cid in (0, 1):
+            for reg, val in (
+                (0x20, 0xC7), (0x28, 0x4A), (0x30, 0),
+                (0x40, 0x01), (0x60, 0x00), (0x80, 0x1F),
+                (0xA0, 0x00), (0xC0, 0x00), (0xE0, 0xF0),
+                (0x08, 0x78),
+            ):
+                writes.append(ChipWrite(0, "ym2151", cid, reg, val))
+        vgm = VgmFile(
+            path=Path("dual-opm.vgm"),
+            version=0x151,
+            total_samples=44100,
+            loop_samples=0,
+            loop_sample=None,
+            writes=writes,
+            clocks={("ym2151", 0): 3_579_545, ("ym2151", 1): 3_579_545},
+        )
+        result = convert_vgm(vgm)
+        self.assertEqual(result.tracks, 2)
+        self.assertEqual(result.notes, 2)
+
     def test_opn_a4(self):
         cmds = bytearray()
         cmds += synth.ym2612(0, 0x22, 0) + synth.ym2612(0, 0x27, 0) + synth.ym2612(0, 0x2B, 0)
@@ -292,6 +318,8 @@ class ExtractorTests(unittest.TestCase):
         result = convert_vgm(vgm)
         note = _only_note(vgm, "ay")
         self.assertAlmostEqual(note.pitch / 64.0, 69.0, delta=0.05)
+        # AY mixes three channels into one normalized output.
+        self.assertAlmostEqual(note.gain, 1.0 / 3.0, delta=0.01)
         self.assertIn("%0", result.text)
 
     def test_sn76489_a4(self):

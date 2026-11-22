@@ -257,13 +257,21 @@ def _channels_for(kind: str, flags: dict[str, int]) -> int:
 
 
 def extract_opn(
-    vgm: VgmFile, voices: VoiceLibrary, kind: str, order_base: int = 0
+    vgm: VgmFile,
+    voices: VoiceLibrary,
+    kind: str,
+    order_base: int = 0,
+    instance: int | None = None,
 ) -> ExtractResult:
     """Decode one OPN chip family from the write stream."""
     if kind not in ("ym2203", "ym2612", "ym2608", "ym2610"):
         raise ValueError(f"not an OPN kind: {kind}")
     result = ExtractResult()
-    instances = sorted({w.chip_id for w in vgm.writes if w.chip == kind}) or [0]
+    instances = (
+        [instance]
+        if instance is not None
+        else sorted({w.chip_id for w in vgm.writes if w.chip == kind}) or [0]
+    )
     channels = _channels_for(kind, vgm.chip_flags)
     stats = {"notes": 0, "keyons": 0, "tl_moves": 0, "special_skips": 0, "dac_skips": 0}
     skipped_ssg_eg = 0
