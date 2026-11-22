@@ -36,15 +36,14 @@ def _ay_gain(level: int, *, headroom: bool = False) -> float:
     return db_gain((15 - level) * 1.5) / (3.0 if headroom else 1.0)
 
 
-def _sn_gain(atten: int, *, headroom: bool = False) -> float:
+def _sn_gain(atten: int) -> float:
     atten = max(0, min(15, int(atten)))
     if atten >= 15:
         return 0.0
-    # The SN76489 mixer gives each of its four voices 1/4 of the output
-    # range.  SiON emits one track per voice, so use the same headroom when
-    # an FM chip shares the log; without it the Genesis PSG overpowers the
-    # YM2612.  Standalone PSG logs keep the chip's full output.
-    return db_gain(atten * 2.0) / (4.0 if headroom else 1.0)
+    # Keep the chip's 2 dB attenuation curve.  Do not apply a per-voice
+    # 1/4 headroom: SiON already mixes these as separate tracks, and the
+    # source VGM's whole-log normalization is not something to reproduce.
+    return db_gain(atten * 2.0)
 
 
 def _ay_voice_noise() -> SimpleVoice:
@@ -339,13 +338,10 @@ class _SnChannel:
 
 
 class _SnChip:
-    def __init__(
-        self, clock: int, label: str, order_base: int, *, headroom: bool = False
-    ) -> None:
+    def __init__(self, clock: int, label: str, order_base: int) -> None:
         self.clock = clock
         self.label = label
         self.order_base = order_base
-        self.headroom = headroom
         self.channels = [_SnChannel() for _ in range(4)]
         self.latched_channel = 0
         self.latched_volume = False
@@ -373,7 +369,7 @@ class _SnChip:
 
     def tone_gain(self, ch: int) -> tuple[float, float]:
         att = self.channels[ch].attenuation
-        gain = _sn_gain(att, headroom=self.headroom) if att < 15 else 0.0
+        gain = _sn_gain(att) if att < 15 else 0.0
         pan, stereo_gain = self.pan_gain(ch)
         return pan, gain * stereo_gain
 
@@ -388,9 +384,7 @@ class _SnChip:
             return 0.0
         # Noise is a single mono source on the real chip; use the average of
         # the two enable bits as the gain, and pan by whichever side is on.
-        return _sn_gain(att, headroom=self.headroom) * (
-            1.0 if (left and right) else 0.75
-        )
+        return _sn_gain(att) * (1.0 if (left and right) else 0.75)
 
     def refresh(self, sample: int) -> None:
         for ch in range(3):
@@ -538,7 +532,7 @@ def extract_sn76489(
         return result
     clock = vgm.clock("sn76489", instance) or 3_579_545
     label = "SN76489" if instance == 0 else f"SN76489 #{instance + 1}"
-    chip = _SnChip(clock, label, order_base, headroom=has_fm_chip(vgm))
+    chip = _SnChip(clock, label, order_base)
     for w in writes:
         if w.reg == 1:
             chip.set_stereo(w.val & 0xFF)

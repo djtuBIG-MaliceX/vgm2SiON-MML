@@ -363,15 +363,14 @@ class ExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(note.gain, 1.0, delta=0.01)
         self.assertIn("%0", result.text)
 
-    def test_sn76489_channel_headroom(self):
+    def test_sn76489_gain_curve(self):
         from vgm2sionmml.chips.psg import _sn_gain
 
         self.assertEqual(_sn_gain(0), 1.0)
-        self.assertEqual(_sn_gain(0, headroom=True), 0.25)
-        self.assertEqual(_sn_gain(15, headroom=True), 0.0)
-        self.assertLess(_sn_gain(8, headroom=True), _sn_gain(0, headroom=True))
+        self.assertEqual(_sn_gain(15), 0.0)
+        self.assertLess(_sn_gain(8), _sn_gain(0))
 
-    def test_sn76489_headroom_only_when_fm_present(self):
+    def test_sn76489_keeps_level_with_fm_present(self):
         cmds = bytearray([0x50, 0x8E, 0x50, 0x0F, 0x50, 0x90])
         cmds += synth.ym2612(0, 0x22, 0x00)
         cmds += synth.wait(44100) + bytes([0x50, 0x9F])
@@ -385,7 +384,7 @@ class ExtractorTests(unittest.TestCase):
             )
         )
         note = _only_note(vgm, "sn")
-        self.assertAlmostEqual(note.gain, 0.25, delta=0.01)
+        self.assertAlmostEqual(note.gain, 1.0, delta=0.01)
 
     def test_sn76489_a4(self):
         cmds = bytearray([0x50, 0x8E, 0x50, 0x0F, 0x50, 0x90])

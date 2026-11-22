@@ -26,7 +26,7 @@ FM_CHIPS = frozenset(
 def has_fm_chip(vgm: VgmFile) -> bool:
     """Whether the log also contains an FM chip.
 
-    PSG chips are mixed by VGM players with headroom so they cannot bury a
+    VGM players mix AY PSG channels with headroom so they cannot bury a
     simultaneous FM chip.  That headroom is only meaningful when an FM chip
     is present; a standalone PSG log should use the chip's full output.
     """

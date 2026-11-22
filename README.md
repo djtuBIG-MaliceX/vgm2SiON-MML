@@ -144,11 +144,12 @@ Example output:
 * **PSG**: tone channels use `%0@0`; noise uses `%0@1`/`%0@2`. AY envelope
   levels are simulated at the envelope step rate and written as `x`
   expression points. Volume 0 and SN attenuation 15 close the current note
-  instead of leaving a silent held note. The AY 1/3 and SN76489 1/4 headroom
-  is applied only when the same VGM contains an FM chip; standalone PSG logs
-  keep their full level. Game Gear stereo becomes `p` values. AY and SN
-  noise use the 32-entry PSG noise pitch range, not the old out-of-range
-  note offsets.
+  instead of leaving a silent held note. The AY 1/3 headroom is applied only
+  when the same VGM contains an FM chip; standalone AY logs keep their full
+  level. SN76489 voices keep the chip's full per-voice level and only its
+  2 dB attenuation curve; there is no 1/4 channel-share attenuation. Game
+  Gear stereo becomes `p` values. AY and SN noise use the 32-entry PSG noise
+  pitch range, not the old out-of-range note offsets.
 * **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle uses `%3@16` (MA3
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used
@@ -237,7 +238,7 @@ Set `SION_PLAY` to point at a `sion-play` executable if it is not at
 * Auto tempo only chooses a musical grid; pass `--bpm N` when the source has
   a known tempo.  Optimization is conservative around ties and stops before
   creating constructs SiON's parser rejects.
-* Dense multi-chip logs can clip in the player. The CLI defaults to `--gain 0.75` for headroom; pass `--gain 1.0` to keep the source level or lower it further.
+* Dense multi-chip logs can clip in the player. The CLI defaults to `--gain 0.75` for headroom; pass `--gain 1.0` to keep the converted mix level or lower it further.
 
 ## Layout
 
