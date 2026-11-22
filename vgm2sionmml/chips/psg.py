@@ -40,7 +40,11 @@ def _sn_gain(atten: int) -> float:
     atten = max(0, min(15, int(atten)))
     if atten >= 15:
         return 0.0
-    return db_gain(atten * 2.0)
+    # The SN76489 mixer gives each of its four voices 1/4 of the output
+    # range before the chip's 0.5 player volume.  SiON emits one track per
+    # voice, so without the 1/4 channel share the PSG overwhelms the YM2612
+    # on Genesis logs even though the attenuation curve itself is correct.
+    return db_gain(atten * 2.0) / 4.0
 
 
 def _ay_voice_noise() -> SimpleVoice:

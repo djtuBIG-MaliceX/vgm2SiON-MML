@@ -140,10 +140,11 @@ Example output:
 * **PSG**: tone channels use `%0@0`; noise uses `%0@1`/`%0@2`. AY envelope
   levels are simulated at the envelope step rate and written as `x`
   expression points. Volume 0 and SN attenuation 15 close the current note
-  instead of leaving a silent held note. The three AY channels are mixed at
-  VGM's 1/3 headroom so the PSG does not overpower the FM channels. Game Gear
-  stereo becomes `p` values. AY and SN noise use the 32-entry PSG noise pitch
-  range, not the old out-of-range note offsets.
+  instead of leaving a silent held note. The three AY channels use VGM's 1/3
+  headroom, and each SN76489 voice uses the chip's 1/4 four-voice headroom;
+  without that, the Genesis PSG overpowers the YM2612. Game Gear stereo
+  becomes `p` values. AY and SN noise use the 32-entry PSG noise pitch range,
+  not the old out-of-range note offsets.
 * **NES**: pulse duty becomes `%1@1/@2/@4/@6`, triangle uses `%3@16` (MA3
   triangle wave, full pitch range) with low notes folded up by an octave, and
   noise uses `%1@9/@10`; the hardware length counter and envelope are used

@@ -363,6 +363,13 @@ class ExtractorTests(unittest.TestCase):
         self.assertAlmostEqual(note.gain, 1.0 / 3.0, delta=0.01)
         self.assertIn("%0", result.text)
 
+    def test_sn76489_channel_headroom(self):
+        from vgm2sionmml.chips.psg import _sn_gain
+
+        self.assertEqual(_sn_gain(0), 0.25)
+        self.assertEqual(_sn_gain(15), 0.0)
+        self.assertLess(_sn_gain(8), _sn_gain(0))
+
     def test_sn76489_a4(self):
         cmds = bytearray([0x50, 0x8E, 0x50, 0x0F, 0x50, 0x90])
         cmds += synth.wait(44100) + bytes([0x50, 0x9F])
