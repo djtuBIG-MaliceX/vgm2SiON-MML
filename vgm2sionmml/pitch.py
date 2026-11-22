@@ -122,6 +122,19 @@ def opn_units(block: int, fnum: int, clock: int, divisor: float = 144.0) -> int:
     return midi_to_units(freq_to_midi(opn_freq(block, fnum, clock, divisor)))
 
 
+def opll_freq(block: int, fnum: int, clock: int) -> float:
+    """YM2413/VRC7 block/f-number -> Hz.
+
+    The OPLL phase accumulator is one octave above the OPL2 mapping: its
+    ``fnum << block`` increment runs at clock/72 in a 19-bit accumulator.
+    Using the OPL2 divisor here made every OPLL/VRC7 source sound an octave
+    low.
+    """
+    block = max(0, min(7, int(block)))
+    fnum = max(1, min(0x1FF, int(fnum)))
+    return fnum * clock / (72.0 * (2.0 ** (19 - block)))
+
+
 def opl_units(block: int, fnum: int, clock: int, opl3: bool = False) -> int:
     return midi_to_units(freq_to_midi(opl_freq(block, fnum, clock, opl3)))
 

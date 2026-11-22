@@ -12,6 +12,7 @@ from .chips import (
     extract_k005289,
     extract_nes,
     extract_opl,
+    extract_opll,
     extract_opn,
     extract_scc,
     extract_sn76489,
@@ -21,7 +22,8 @@ from .chips import (
 from .chips.common import ExtractResult
 from .mml import MmlRenderer
 from .optimize import detect_bpm
-from .model import Song, VoiceLibrary, WaveTableLibrary
+from .envelopes import assign_envelopes
+from .model import EnvelopeTableLibrary, Song, VoiceLibrary, WaveTableLibrary
 from .vgm import VgmFile, load_vgm
 
 
@@ -51,6 +53,7 @@ HANDLED = {
     "ym2610_ssg",
     "ay8910",
     *OPL_KINDS,
+    "ym2413",
     "sn76489",
     "nes",
     "k051649",
@@ -145,6 +148,13 @@ def convert_vgm(
                 f"{kind}_{instance}",
             )
 
+    # YM2413 / VRC7.
+    for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "ym2413"}):
+        absorb(
+            extract_opll(vgm, voices, instance=instance, order_base=order),
+            f"ym2413_{instance}",
+        )
+
     # SN76489 / T6W28.
     for instance in sorted({w.chip_id for w in vgm.writes if w.chip == "sn76489"}):
         absorb(
@@ -215,6 +225,10 @@ def convert_vgm(
         t for t in tracks
         if any(n.end is None or n.end > n.start for n in t.timeline.notes)
     ]
+    tables = None
+    envelope_stats: dict[str, int] = {}
+    if optimize:
+        tables, envelope_stats = assign_envelopes(tracks, vgm.total_samples)
     if len(tracks) > 128:
         warnings.append(
             f"{len(tracks)} tracks emitted; SiON's default maximum is 128"
@@ -222,7 +236,8 @@ def convert_vgm(
     if not tracks:
         raise ConversionError(
             "no convertible notes found (supported chips: YM2151, YM2203, "
-            "YM2612, YM2608, YM2610, YM3526, YM3812, YMF262, AY-3-8910, "
+            "YM2612, YM2608, YM2610, YM3526, YM3812, YMF262, YM2413, "
+            "AY-3-8910, "
             "SN76489, NES APU, SCC, HuC6280, Virtual Boy VSU, Game Boy, "
             "K005289)"
         )
@@ -240,6 +255,7 @@ def convert_vgm(
         tracks=tracks,
         voices=voices,
         waves=waves,
+        tables=tables if tables is not None else EnvelopeTableLibrary(),
         total_samples=vgm.total_samples,
         loop_sample=vgm.loop_sample if loop else None,
         bpm=bpm,
@@ -252,6 +268,8 @@ def convert_vgm(
     stats["notes"] = notes
     stats["voices"] = len(voices.voices)
     stats["waves"] = len(waves.tables)
+    stats["envelope_tables"] = len(song.tables.tables)
+    stats["envelope_stats"] = envelope_stats
     stats["bpm"] = bpm
     stats["gain"] = gain
     stats["duration_seconds"] = round(vgm.duration_seconds, 3)

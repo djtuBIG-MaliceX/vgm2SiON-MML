@@ -16,6 +16,7 @@ PCM/ADPCM sample playback is intentionally out of scope.
 | FM / OPN | YM2203, YM2612, YM2608, YM2610/YM2610B | `#OPN@` four-operator voices, 3/4/6 tracks |
 | SSG | AY-compatible SSG inside YM2203/2608/2610 | `%0` square/noise tracks |
 | FM / OPL | YM3526 (OPL1), YM3812 (OPL2), YMF262 (OPL3) | `#OPL@` 2-op and 4-op voices |
+| FM / OPLL | YM2413 (OPLL), Konami VRC7 | `#OPL@` 2-op voices, 9 or 6 channels |
 | PSG | AY-3-8910 / YM2149 | `%0` square/envelope and noise tracks |
 | PSG | SN76489, Game Gear stereo; T6W28 halves as two mono chips | `%0` tone/noise tracks |
 | APU | NES 2A03 pulse 1/2, triangle, noise | `%1` tracks |
@@ -25,10 +26,10 @@ PCM/ADPCM sample playback is intentionally out of scope.
 | Wavetable | Nintendo Virtual Boy VSU | `%4` + `#WAVB`, `%2` noise |
 | APU | Game Boy DMG pulse 1/2, wave, noise | `%8`, `%4`, `%2` tracks |
 
-Recognized but not converted: YM2413/OPLL, Y8950 ADPCM, YMF278B/OPL4,
-YMF271, YMZ280B, and every sample/ADPCM chip. HuC6280, VSU and Game Boy
-noise use SiON's periodic-noise module; the noise pitch is approximate.
-The report and warnings name what was ignored.
+Recognized but not converted: Y8950 ADPCM, YMF278B/OPL4, YMF271,
+YMZ280B, and every sample/ADPCM chip. HuC6280, VSU and Game Boy noise use
+SiON's periodic-noise module; the noise pitch is approximate. The report
+and warnings name what was ignored.
 
 ## Install / run
 
@@ -47,7 +48,7 @@ Options:
 --bpm N            explicit SiON tempo, 1-511 (default: auto-detect)
 --no-auto-tempo     use 120 BPM instead of auto tempo detection
 --no-loop           do not emit the `$` loop point
---no-optimize      disable macro/loop/default-length size optimization
+--no-optimize      disable macro/loop/default-length and table-envelope optimization
 --title TEXT        override #TITLE
 --max-voices N      SiON FM voice slot cap (default 256)
 --gain F            master gain multiplier (default 0.75; 1.0 keeps source level)
@@ -87,11 +88,15 @@ Example output:
 4. `mml.py` quantizes event times to SiON's 1920-tick whole note, splits held
    notes at control points into slurred (`&`) segments, encodes note lengths
    as exact sums of SiON note values, deduplicates FM voices and writes the
-   MML.
+   MML.  `envelopes.py` can replace a repeated or long pitch/gain control
+   curve with a `#TABLE` and `nt`/`na`; fractional `np` tables are not emitted
+   because their frame cursor did not reproduce the source curves exactly.
 5. The first pass renders token streams.  `optimize.py` then chooses a tempo
    grid, applies a common default note length, finds immediately repeated
    token blocks for `[ ... ]n` loops, and emits up to 26 shared `#A`..`#Z`
-   macros.  The second pass writes the compact MML.
+   macros.  The second pass writes the compact MML.  SiON tempo is
+   track-local, so every track starts with its own `t<bpm>`; otherwise a
+   long rest on one channel would drift against the others.
 6. The loop point becomes a `$` in every track. Notes crossing it are split
    into an intro copy and a loop-body copy, and every loop body is padded to
    the same end time.
@@ -111,6 +116,12 @@ Example output:
   voices. OPL3's per-pair 0x104 enable bits drive 4-op voices in physical
   chain order `[head op1, head op2, second op1, second op2]`. OPL rhythm mode
   becomes five one-shot drum tracks using the chip's rhythm operators.
+* **OPLL/VRC7**: a YM2413 clock word with bit 31 set selects Konami's VRC7
+  preset bank and six channels; otherwise the chip uses the standard 19-entry
+  OPLL bank and nine channels. Preset 0 reads the custom `$00`-`$07` patch.
+  The `$3x` low nibble becomes note gain (3 dB per step). Rhythm mode becomes
+  five one-shot tracks (BD, SD, TOM, TOP, HH) built from preset operators
+  16-18 and the `$36`-`$38` level nibbles.
 * Carrier-level floors are moved out of FM voices into `x` expression values;
   this keeps voice identities stable and matches the source's per-note level.
 * **PSG**: tone channels use `%0@0`; noise uses `%0@1`/`%0@2`. AY envelope
@@ -144,7 +155,7 @@ python -m unittest discover -s tests -v
 
 The suite covers the VGM header/loop parser, exact duration arithmetic, each
 chip's A4 pitch mapping, OPN stereo, OPM/OPN/OPL operator ordering, OPL 4-op
-and rhythm voices, OPL TL automation, NES triangle/MA3 pitch, SN Game Gear
+and rhythm voices, OPLL/VRC7 and OPLL rhythm, OPL TL automation, NES triangle/MA3 pitch, SN Game Gear
 stereo, SCC/K005289/HuC6280/VSU/Game Boy wavetable tracks, size optimization,
 and end-to-end compilation with the reference `libSiON-rs` player.
 Sample-song tests skip when their files are absent. The sample expectations
@@ -160,15 +171,20 @@ Set `SION_PLAY` to point at a `sion-play` executable if it is not at
   NES DPCM, OPL4 waves, and all sample chips are ignored (with warnings).
 * **OPN channel-3 special mode** is skipped because its four operators have
   independent pitches, which the `#OPN@` voice model cannot express.
-* **OPL rhythm** pitch and decay are approximations; the five drum tracks use
-  the chip's rhythm operators and one-shot note lengths.
+* **OPL/OPLL rhythm** pitch and decay are approximations; the five drum tracks
+  use the chip's rhythm operators and one-shot note lengths. OPLL rhythm
+  channel registers are linked, so the drum pitch tracks the linked hardware
+  channel rather than independent drum tuning.
 * **NES sweep** is ignored, and the envelope/length simulation is an
   approximation rather than cycle-exact APU emulation.
 * **AY/SN noise** is approximated with SiON's pulse/periodic noise voices.
 * Mid-note timbre changes are not re-voiced; carrier TL changes are written
   as `x` expression points, and boosts above the key-on level are clamped.
 * Long vibrato/pitch automation is written as stepped, slurred note segments;
-  SiON LFO commands are emitted from OPM/OPN LFO registers when present.
+  semitone-aligned curves may become `nt` `#TABLE` envelopes and gain curves
+  may become `na`.  Arbitrary fractional pitch curves stay as ties because
+  SiON's `np` frame mapping is not sample-exact.  SiON LFO commands are
+  emitted from OPM/OPN LFO registers when present.
 * SiON has 256 FM voice slots, 256 custom wavetable slots and 128 tracks.
   Voice/wavetable overflow reuses the nearest timbre and is warned about.
   The converter currently emits one track per hardware channel; logs with
@@ -195,6 +211,8 @@ vgm2sionmml/
     opm.py        YM2151
     opn.py        YM2203/2612/2608/2610 FM
     opl.py        YM3526/YM3812/YMF262
+    opll.py       YM2413/OPLL + VRC7, including rhythm
+    opll_banks.py YM2413 and VRC7 preset data
     psg.py        AY-3-8910/YM2149 + SN76489
     nes.py        NES 2A03
     scc.py        Konami SCC / SCC+
@@ -202,6 +220,7 @@ vgm2sionmml/
     huc6280.py    Hudson HuC6280
     vsu.py        Virtual Boy VSU
     gb.py         Game Boy DMG
+  envelopes.py    pitch/gain #TABLE detection and attachment
   optimize.py     two-pass tempo/grid and MML size optimizer
 tests/            synthetic VGM fixtures + sample-song checks
 ```

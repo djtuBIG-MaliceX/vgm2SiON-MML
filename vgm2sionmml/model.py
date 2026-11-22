@@ -142,6 +142,73 @@ class WaveTableLibrary:
         return None
 
 
+@dataclass(frozen=True)
+class EnvelopeTable:
+    """A SiON ``#TABLE`` sequence used by np/nt/na."""
+
+    values: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if not 1 <= len(self.values) <= 65536:
+            raise ValueError("a SiON envelope table needs 1-65536 entries")
+
+    @property
+    def key(self) -> tuple[int, ...]:
+        return self.values
+
+    def mml(self, index: int) -> str:
+        return f"#TABLE{index}{{{self._body()}}};"
+
+    def _body(self) -> str:
+        # Runs of the same value use the compact (v)n table syntax.  Keep
+        # other values explicit; the MML parser resolves both forms.
+        parts: list[str] = []
+        i = 0
+        while i < len(self.values):
+            j = i + 1
+            while j < len(self.values) and self.values[j] == self.values[i]:
+                j += 1
+            count = j - i
+            if count > 1:
+                parts.append(f"({self.values[i]}){count}")
+            else:
+                parts.append(str(self.values[i]))
+            i = j
+        return ",".join(parts)
+
+
+class EnvelopeTableLibrary:
+    """Deduplicated ``#TABLE`` definitions, capped at SiON's index range."""
+
+    def __init__(self, limit: int = 255) -> None:
+        self.limit = limit
+        self.tables: list[EnvelopeTable] = []
+        self._index: dict[tuple[int, ...], int] = {}
+
+    def add(self, values) -> int | None:
+        table = EnvelopeTable(tuple(int(v) for v in values))
+        hit = self._index.get(table.key)
+        if hit is not None:
+            return hit
+        if len(self.tables) >= self.limit:
+            return None
+        idx = len(self.tables)
+        self.tables.append(table)
+        self._index[table.key] = idx
+        return idx
+
+
+@dataclass(frozen=True)
+class EnvelopeSpec:
+    command: str  # "np", "nt" or "na"
+    table: int
+    step: int = 1
+
+    @property
+    def token(self) -> str:
+        return f"{self.command}{self.table},{self.step}"
+
+
 @dataclass
 class Note:
     start: int
@@ -158,6 +225,9 @@ class Note:
     # OPL operator total-level overrides at the note's gate, and later moves.
     op_tl: tuple[tuple[int, int], ...] = ()
     op_tl_points: list[tuple[int, int, int]] = field(default_factory=list)
+    # Optional table envelopes replacing repeated pitch/gain tie segments.
+    pitch_env: EnvelopeSpec | None = None
+    gain_env: EnvelopeSpec | None = None
     # Diagnostic tags (never emitted).
     tag: str = ""
 
@@ -378,6 +448,7 @@ class Song:
     voices: VoiceLibrary
     total_samples: int
     waves: WaveTableLibrary = field(default_factory=WaveTableLibrary)
+    tables: EnvelopeTableLibrary = field(default_factory=EnvelopeTableLibrary)
     loop_sample: int | None = None
     bpm: int = 120
     warnings: list[str] = field(default_factory=list)

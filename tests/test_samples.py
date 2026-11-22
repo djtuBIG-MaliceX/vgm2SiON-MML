@@ -44,6 +44,22 @@ SAMPLES = {
         Path("D:/Downloads/StarfireOPNA/02 Title Screen.vgz"),
         "#OPN@",
     ),
+    "opll": (
+        Path("D:/Tools/VGMPlay/VGM/Fantasy Zone II (FM) - 09 - Boss Theme.vgz"),
+        "#OPL@",
+    ),
+    "opll_vrc7": (
+        Path("D:/Downloads/Lagrange Point - Awaken into Warriors.vgm"),
+        "#OPL@",
+    ),
+    "opll_nation": (
+        Path("D:/Downloads/opll nation.vgm"),
+        "#OPL@",
+    ),
+    "opll_mahbod": (
+        Path("D:/Downloads/mahbod-usedtosay.vgm"),
+        "#OPL@",
+    ),
     "scc": (
         DOWNLOADS / "moreVGMs" / "KittenKaboodleVGM" / "03 Favorite Meow, Cute Meow (Stage 1).vgz",
         "#WAVB",
@@ -94,6 +110,10 @@ class SampleConversionTests(unittest.TestCase):
         result = self._check("opl3_4op")
         self.assertEqual(result.stats["ymf262_0"]["four_op_notes"], 901)
         self.assertGreater(result.stats["ymf262_0"]["drum_notes"], 0)
+        # BD is normal FM channel 7; the other rhythm voices remain drums.
+        self.assertIn("// YMF262 1 ch 7", result.text)
+        self.assertIn("// YMF262 1 SD", result.text)
+        self.assertIn("// YMF262 1 TOM", result.text)
 
     def test_opl3_two_op_sample(self):
         result = self._check("opl3_2op")
@@ -108,6 +128,38 @@ class SampleConversionTests(unittest.TestCase):
     def test_ym2203_sample(self):
         result = self._check("ym2203")
         self.assertEqual(result.stats["ym2203_0"]["notes"], 663)
+
+    def test_opll_sample(self):
+        result = self._check("opll")
+        self.assertEqual(result.stats["ym2413_0"]["notes"], 1222)
+        self.assertGreater(result.stats["ym2413_0"]["drums"], 0)
+        self.assertIn("YM2413 1 SD", result.text)
+
+    def test_vrc7_sample(self):
+        result = self._check("opll_vrc7")
+        self.assertIn("VRC7 1 ch 1", result.text)
+        self.assertEqual(result.stats["ym2413_0"]["notes"], 1245)
+
+    def test_opll_nation_sample(self):
+        result = self._check("opll_nation")
+        self.assertEqual(result.stats["ym2413_0"]["notes"], 7199)
+        self.assertGreater(result.stats["ym2413_0"]["custom_notes"], 0)
+
+    def test_opll_long_silences_keep_track_tempo(self):
+        result = self._check("opll_mahbod")
+        self.assertEqual(result.stats["ym2413_0"]["notes"], 3088)
+        track_lines = [line for line in result.text.splitlines() if line.startswith("%")]
+        self.assertEqual(len(track_lines), 9)
+        self.assertTrue(all("t102" in line for line in track_lines), track_lines)
+
+    def test_opll_opllx_large_log(self):
+        # OPLX is an OPLL song name, not a chip type.
+        path = DOWNLOADS / "OPLX.vgm"
+        if not path.is_file():
+            self.skipTest(f"sample not present: {path}")
+        result = convert_file(path, optimize=False)
+        self.assertEqual(result.stats["ym2413_0"]["notes"], 10720)
+        self.assertGreater(result.tracks, 0)
 
     def test_ym2608_sample_loop_starts_at_intro(self):
         result = self._check("ym2608")

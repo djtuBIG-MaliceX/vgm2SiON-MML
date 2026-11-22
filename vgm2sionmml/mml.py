@@ -113,6 +113,12 @@ class MmlRenderer:
             for index, table in enumerate(self.song.waves.tables)
         ]
 
+    def _envelope_table_headers(self) -> list[str]:
+        return [
+            table.mml(index)
+            for index, table in enumerate(self.song.tables.tables)
+        ]
+
     def _voice_headers(self) -> list[str]:
         blocks: list[str] = []
         for family in ("opm", "opn", "opl"):
@@ -134,17 +140,19 @@ class MmlRenderer:
         if wavetables:
             parts.extend(wavetables)
             parts.append("")
+        envelope_tables = self._envelope_table_headers()
+        if envelope_tables:
+            parts.extend(envelope_tables)
+            parts.append("")
         voices = self._voice_headers()
         if voices:
             parts.extend(voices)
             parts.append("")
         rendered: list[tuple[Track, list[str]]] = []
-        first = True
         for track in self.song.tracks_in_order():
-            tokens = self._render_track_tokens(track, include_tempo=first)
+            tokens = self._render_track_tokens(track, include_tempo=True)
             if tokens is None:
                 continue
-            first = False
             rendered.append((track, tokens))
         macros: list[tuple[str, list[str]]] = []
         if rendered:
@@ -275,6 +283,8 @@ class MmlRenderer:
                     wave_points=[p for p in note.wave_points if p[0] < loop_sample],
                     op_tl=note.op_tl,
                     op_tl_points=[p for p in note.op_tl_points if p[0] < loop_sample],
+                    pitch_env=None,
+                    gain_env=None,
                     tag=note.tag,
                 )
                 post = Note(
@@ -292,6 +302,8 @@ class MmlRenderer:
                         (op, v) for op, v in note.op_tl
                     ),
                     op_tl_points=[p for p in note.op_tl_points if p[0] > loop_sample],
+                    pitch_env=None,
+                    gain_env=None,
                     tag=note.tag,
                 )
                 if isinstance(post.voice, SimpleVoice):
@@ -369,16 +381,18 @@ class MmlRenderer:
         # Collect control points, keeping only the ones strictly inside the
         # gate and quantising them to the same tick grid as the note.
         points: list[tuple[int, str, object]] = []
-        for t, value in note.pitch_points:
-            if note.start < t < (note.end if note.end is not None else self.song.total_samples):
-                tick = ticks_from_samples(t, bpm)
-                if start < tick < end:
-                    points.append((tick, "pitch", value))
-        for t, value in note.gain_points:
-            if note.start < t < (note.end if note.end is not None else self.song.total_samples):
-                tick = ticks_from_samples(t, bpm)
-                if start < tick < end:
-                    points.append((tick, "gain", value))
+        if note.pitch_env is None:
+            for t, value in note.pitch_points:
+                if note.start < t < (note.end if note.end is not None else self.song.total_samples):
+                    tick = ticks_from_samples(t, bpm)
+                    if start < tick < end:
+                        points.append((tick, "pitch", value))
+        if note.gain_env is None:
+            for t, value in note.gain_points:
+                if note.start < t < (note.end if note.end is not None else self.song.total_samples):
+                    tick = ticks_from_samples(t, bpm)
+                    if start < tick < end:
+                        points.append((tick, "gain", value))
         for t, value in note.pan_points:
             if note.start < t < (note.end if note.end is not None else self.song.total_samples):
                 tick = ticks_from_samples(t, bpm)
@@ -441,8 +455,10 @@ class MmlRenderer:
                 self._emit_operator_levels(
                     note.op_tl, state, tokens, initialize=True
                 )
+                self._emit_envelopes(note, state, tokens)
                 self._emit_lfo(track, note.start, state, tokens)
-                self._emit_gain(current_gain, state, tokens)
+                if note.gain_env is None:
+                    self._emit_gain(current_gain, state, tokens)
                 self._emit_pan(current_pan, state, tokens)
             else:
                 if not tokens or tokens[-1] != "&":
@@ -454,7 +470,8 @@ class MmlRenderer:
                 )
                 if current_wave is not None:
                     self._emit_wave(current_wave, state, tokens)
-                self._emit_gain(current_gain, state, tokens)
+                if note.gain_env is None:
+                    self._emit_gain(current_gain, state, tokens)
                 self._emit_pan(current_pan, state, tokens)
                 self.stats.tied_segments += 1
 
@@ -485,6 +502,39 @@ class MmlRenderer:
             tokens.append(token)
             state.module_voice = token
             state.op_tl.clear()
+
+    def _emit_envelopes(
+        self, note: Note, state: "_TrackState", tokens: list[str]
+    ) -> None:
+        pitch = note.pitch_env
+        old_pitch = state.pitch_env
+        if pitch is None:
+            if old_pitch is not None:
+                tokens.append(f"{old_pitch[:2]}255")
+                state.pitch_env = None
+                state.detune = None
+        else:
+            if old_pitch is not None and old_pitch[:2] != pitch.command:
+                tokens.append(f"{old_pitch[:2]}255")
+            token = pitch.token
+            if old_pitch != token:
+                tokens.append(token)
+                state.pitch_env = token
+                # The table controls pitch; force a base k after it ends.
+                state.detune = None
+        gain = note.gain_env
+        old_gain = state.gain_env
+        if gain is None:
+            if old_gain is not None:
+                tokens.append("na255")
+                state.gain_env = None
+                state.gain = None
+        else:
+            token = gain.token
+            if old_gain != token:
+                tokens.append(token)
+                state.gain_env = token
+                state.gain = None
 
     def _emit_operator_levels(
         self,
@@ -604,6 +654,8 @@ class _TrackState:
         "lfo_amp",
         "lfo_active",
         "op_tl",
+        "pitch_env",
+        "gain_env",
         "cursor",
     )
 
@@ -618,6 +670,8 @@ class _TrackState:
         self.lfo_amp = 0
         self.lfo_active = False
         self.op_tl: dict[int, int] = {}
+        self.pitch_env: str | None = None
+        self.gain_env: str | None = None
         self.cursor = 0
 
 

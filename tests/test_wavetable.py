@@ -13,8 +13,9 @@ from vgm2sionmml.chips import (
     extract_vsu,
 )
 from vgm2sionmml.model import VoiceLibrary, WaveTableLibrary
-from vgm2sionmml.optimize import compress_loops, detect_bpm
-from vgm2sionmml.model import ChannelTimeline, Note, Song, Track
+from vgm2sionmml.optimize import compress_loops, detect_bpm, find_macros
+from vgm2sionmml.envelopes import assign_envelopes
+from vgm2sionmml.model import ChannelTimeline, Note, SimpleVoice, Song, Track, VoiceLibrary
 from vgm2sionmml.mml import MmlRenderer
 from vgm2sionmml.vgm import load_vgm
 from tests import synth
@@ -136,6 +137,42 @@ class WavetableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             wav = synth.compile_mml(result.text, Path(td))
             self.assertTrue(synth.wav_has_signal(wav))
+
+    def test_macros_need_four_commands_and_ten_repeats(self):
+        body = ["c", "d", "e", "f"]
+        short = body * 10
+        long = body * 11
+        self.assertEqual(find_macros([short])[0], [])
+        macros, _ = find_macros([long])
+        self.assertEqual(len(macros), 1)
+        self.assertEqual(macros[0][1], body)
+
+    def test_pitch_and_gain_table_envelopes_render(self):
+        tl = ChannelTimeline("tables")
+        for start in (0, 44100):
+            note = tl.note_on(
+                start, 69 * 64, SimpleVoice(0, 0), gain=0.5, pan=4.0
+            )
+            for i in range(1, 20):
+                tick = start + i * 735
+                note.add_pitch(tick, 69 * 64 + i * 64)
+                note.add_gain(tick, 0.5 + (i % 5) * 0.1)
+            note.close(start + 44100)
+        tracks = [Track("t", 0, "psg", tl)]
+        tables, stats = assign_envelopes(tracks, 88200)
+        self.assertGreater(len(tables.tables), 0)
+        self.assertGreater(stats["pitch_tables"], 0)
+        self.assertGreater(stats["gain_tables"], 0)
+        song = Song("T", tracks, VoiceLibrary(), 88200, tables=tables)
+        text = MmlRenderer(song, optimize=False).render()
+        self.assertIn("#TABLE", text)
+        self.assertTrue("np" in text or "nt" in text)
+        self.assertIn("na", text)
+        self.assertNotIn("&", text.split("// t", 1)[1])
+        if synth.sion_play_available():
+            with tempfile.TemporaryDirectory() as td:
+                wav = synth.compile_mml(text, Path(td), "tables")
+                self.assertTrue(synth.wav_has_signal(wav))
 
     def test_optimizer_loops_and_detects_frame_tempo(self):
         toks = ["c16", "d16", "e16", "f16", "c16", "d16", "e16", "f16"]

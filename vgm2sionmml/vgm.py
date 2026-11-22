@@ -414,7 +414,10 @@ def load_vgm(path: Path | str) -> VgmFile:
     flags["ym3812_dual"] = int(bool(raw3812 & 0x40000000))
     _add_main_clock(clocks, "ym3526", _sane_clock(_header_flags(raw, HDR_YM3526)))
     _add_main_clock(clocks, "ymf262", _sane_clock(_header_flags(raw, HDR_OPL3)))
-    _add_main_clock(clocks, "ym2413", _sane_clock(_header_flags(raw, HDR_YM2413)))
+    raw2413 = _header_flags(raw, HDR_YM2413)
+    _add_main_clock(clocks, "ym2413", _sane_clock(raw2413))
+    flags["ym2413_dual"] = int(bool(raw2413 & 0x40000000))
+    flags["ym2413_vrc7"] = int(bool(raw2413 & 0x80000000))
 
     # AY-3-8910 / YM2149
     raw_ay = _header_flags(raw, HDR_AY8910)
@@ -636,8 +639,6 @@ def load_vgm(path: Path | str) -> VgmFile:
             pos += 2
             continue
         if cmd in (0x51, 0xA1):
-            # YM2413 / VRC7.  Recognized so logs stay in sync; not converted.
-            note_unsupported("ym2413")
             if pos + 3 <= n:
                 add("ym2413", 1 if cmd == 0xA1 else 0, raw[pos + 1], raw[pos + 2])
             pos += 3

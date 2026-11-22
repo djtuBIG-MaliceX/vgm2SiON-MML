@@ -41,6 +41,10 @@ def ym3812(reg: int, val: int) -> bytes:
     return bytes([0x5A, reg & 0xFF, val & 0xFF])
 
 
+def ym2413(reg: int, val: int, port: int = 0) -> bytes:
+    return bytes([0x51 if port == 0 else 0xA1, reg & 0xFF, val & 0xFF])
+
+
 def ym3526(reg: int, val: int) -> bytes:
     return bytes([0x5B, reg & 0xFF, val & 0xFF])
 
@@ -104,6 +108,7 @@ def make_vgm(
     total_samples: int,
     *,
     clocks: dict[int, int] | None = None,
+    raw_clocks: dict[int, int] | None = None,
     loop_sample: int | None = None,
     loop_offset: int = 0,
     title: str | None = None,
@@ -120,6 +125,8 @@ def make_vgm(
     struct.pack_into("<I", header, 0x34, 0x100 - 0x34)
     for offset, value in (clocks or {}).items():
         struct.pack_into("<I", header, offset, value & 0x3FFFFFFF)
+    for offset, value in (raw_clocks or {}).items():
+        struct.pack_into("<I", header, offset, value & 0xFFFFFFFF)
     body = bytearray(commands)
     if title:
         body.extend(b"\x00")

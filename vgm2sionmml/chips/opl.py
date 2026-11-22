@@ -377,6 +377,10 @@ def extract_opl(
             for bit, (name, _ch, _slot, _dur) in DRUMS.items()
         }
         last_drum_sample = {bit: -1 for bit in DRUMS}
+        # Rhythm drum notes share pitch registers with their linked FM
+        # channels.  Keep them here so A0/B0 writes after the trigger retune
+        # a sounding hit.
+        active_drums: dict[int, list] = {6: [], 7: [], 8: []}
         sounding = [False] * total_channels
         base_tl = [0x3F] * total_channels
         mute = [False] * total_channels
@@ -395,6 +399,20 @@ def extract_opl(
         for group in grouped:
             ordered_writes.extend(w for w in group if not _is_key_write(w))
             ordered_writes.extend(w for w in group if _is_key_write(w))
+
+        def update_drum_pitch(channel: int, sample: int) -> None:
+            if channel not in active_drums:
+                return
+            pitch = state.pitch_units(channel, clock)
+            live = []
+            for note in active_drums[channel]:
+                end = note.end
+                if end is not None and sample >= end:
+                    continue
+                if note.start <= sample:
+                    note.add_pitch(sample, pitch)
+                live.append(note)
+            active_drums[channel] = live
 
         for i, w in enumerate(ordered_writes):
             addr = w.reg & 0x1FF
@@ -425,24 +443,39 @@ def extract_opl(
                             last_drum_sample[bit] = sample
                             hb = state.channel_base(ch6)
                             bank_hi = hb & 0x100
-                            if slot is None:
-                                c0 = state.regs.get(hb | 0xC0, 0)
-                                fb = (c0 >> 1) & 7
-                                slots = CHANNEL_SLOTS[ch6 % 9]
-                                ops = (
-                                    state._op_params(bank_hi | slots[0]),
-                                    state._op_params(bank_hi | slots[1]),
+                            if bit == 0x10:
+                                # Bass drum is the normal FM channel 6
+                                # (one-based channel 7), keyed by the rhythm
+                                # trigger.  Keep it on the normal timeline so
+                                # its pitch and live operator writes work.
+                                patch = state.patch(ch6)
+                                if patch is None:
+                                    continue
+                                alg, fb, ops = patch
+                                voice, tl0, op_tl = _opl_voice(alg, fb, ops)
+                                pitch = state.pitch_units(ch6, clock)
+                                pan, pan_gain = state.pan(ch6)
+                                note = timelines[ch6].note_on(
+                                    sample, pitch, voice,
+                                    gain=pan_gain * db_gain(tl0 * 0.75),
+                                    pan=pan,
                                 )
-                                voice = FmVoice("opl", 0, fb, ops)
+                                note.op_tl = op_tl
+                                base_tl[ch6] = tl0
+                                mute[ch6] = pan_gain <= 0.0
+                                open_window[ch6] = sample + BURST_SAMPLES
+                                active_drums[ch6].append(note)
                             else:
                                 voice = FmVoice(
-                                    "opl", 0, 0, (state._op_params(bank_hi | slot),)
+                                    "opl", 0, 0,
+                                    (state._op_params(bank_hi | slot),),
                                 )
-                            pitch = state.pitch_units(ch6, clock)
-                            pan, pan_gain = state.pan(ch6)
-                            note = drum_timelines[bit].note_on(
-                                sample, pitch, voice, gain=pan_gain, pan=pan
-                            )
+                                pitch = state.pitch_units(ch6, clock)
+                                pan, pan_gain = state.pan(ch6)
+                                note = drum_timelines[bit].note_on(
+                                    sample, pitch, voice, gain=pan_gain, pan=pan
+                                )
+                                active_drums[ch6].append(note)
                             note.end = sample + duration
                             stats["drum_notes"] = stats.get("drum_notes", 0) + 1
                 continue
@@ -499,6 +532,8 @@ def extract_opl(
                 elif was_on and not is_on and sounding[ch]:
                     timelines[ch].note_off(sample)
                     sounding[ch] = False
+                if state.rhythm and bank == 0 and ch in active_drums:
+                    update_drum_pitch(ch, sample)
                 if sounding[ch]:
                     pitch = state.pitch_units(ch, clock)
                     note = timelines[ch].open
@@ -511,6 +546,8 @@ def extract_opl(
             state.write(addr, val)
             if 0xA0 <= r <= 0xA8:
                 ch = bank * 9 + (r - 0xA0)
+                if state.rhythm and bank == 0 and ch in active_drums:
+                    update_drum_pitch(ch, sample)
                 if sounding[ch]:
                     pitch = state.pitch_units(ch, clock)
                     note = timelines[ch].open
@@ -599,8 +636,9 @@ def extract_opl(
 
     if rhythm_seen:
         result.warnings.append(
-            "OPL rhythm mode converted as five one-shot drum tracks; "
-            "drum pitch and decay are approximations"
+            "OPL rhythm mode converted with normal FM channel 6 for the "
+            "bass drum and linked-channel pitch tracking for drums; "
+            "decay is approximate"
         )
     result.stats.update(stats)
     return result

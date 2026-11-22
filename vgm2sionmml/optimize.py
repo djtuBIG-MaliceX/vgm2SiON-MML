@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .model import Track
 
@@ -29,13 +30,19 @@ def _balanced_loops(tokens: list[str]) -> bool:
     return depth == 0
 
 
+@lru_cache(maxsize=None)
+def _is_control_token(token: str) -> bool:
+    return (
+        token == "$"
+        or token.startswith("%")
+        or token.startswith("t")
+        or token.startswith("#")
+        or token.endswith(";")
+    )
+
+
 def _has_control(tokens: list[str]) -> bool:
-    for token in tokens:
-        if token in ("$",) or token.startswith("%") or token == "t" or token.startswith("t"):
-            return True
-        if token.startswith("#") or token.endswith(";"):
-            return True
-    return False
+    return any(_is_control_token(token) for token in tokens)
 
 
 def compress_default_length(tokens: list[str]) -> tuple[list[str], int]:
@@ -80,45 +87,51 @@ def _loop_savings(block: list[str], count: int) -> int:
 
 
 def compress_loops(tokens: list[str], max_block: int = 32) -> tuple[list[str], int]:
-    """Replace immediately repeated token blocks with ``[block]n``."""
+    """Replace immediately repeated token blocks with ``[block]n``.
+
+    Replacing a block can only create a new repeat near the replacement.  A
+    previous version restarted the whole scan after every loop, turning dense
+    logs into quadratic work; resume a bounded distance left of the edit.
+    """
     loops = 0
     tokens = list(tokens)
-    changed = True
-    while changed:
-        changed = False
-        i = 0
-        while i < len(tokens):
-            best = None
-            max_n = min(max_block, (len(tokens) - i) // 2)
-            for n in range(max_n, 1, -1):
-                block = tokens[i : i + n]
-                if _has_control(block):
-                    continue
-                if block[0] in ("&", "&&", "*"):
-                    continue
-                if tokens[i + n : i + 2 * n] != block:
-                    continue
-                count = 2
-                while tokens[i + count * n : i + (count + 1) * n] == block:
-                    count += 1
-                after = i + count * n
-                # A tie immediately after `]` is invalid in SiON: the parser's
-                # last event is the loop terminator, not the note inside it.
-                if after < len(tokens) and tokens[after] in ("&", "&&", "*"):
-                    continue
-                if _loop_savings(block, count) > 2:
-                    best = (n, count, block)
-                    break
-            if best is None:
-                i += 1
+    # Most tracks have no control commands inside the searchable body.  Cache
+    # that fact once instead of rescanning every candidate block up to 32
+    # tokens long.
+    clean = not any(_is_control_token(token) for token in tokens)
+    i = 0
+    while i < len(tokens):
+        best = None
+        max_n = min(max_block, (len(tokens) - i) // 2)
+        for n in range(max_n, 1, -1):
+            block = tokens[i : i + n]
+            if not clean and _has_control(block):
                 continue
-            n, count, block = best
-            tokens[i : i + n * count] = ["["] + block + [f"]{count}"]
-            loops += 1
-            changed = True
-            i += n + 2
+            if block[0] in ("&", "&&", "*"):
+                continue
+            if tokens[i + n : i + 2 * n] != block:
+                continue
+            count = 2
+            while tokens[i + count * n : i + (count + 1) * n] == block:
+                count += 1
+            after = i + count * n
+            # A tie immediately after `]` is invalid in SiON: the parser's
+            # last event is the loop terminator, not the note inside it.
+            if after < len(tokens) and tokens[after] in ("&", "&&", "*"):
+                continue
+            if _loop_savings(block, count) > 2:
+                best = (n, count, block)
+                break
+        if best is None:
+            i += 1
+            continue
+        n, count, block = best
+        tokens[i : i + n * count] = ["["] + block + [f"]{count}"]
+        loops += 1
+        # A new repeat may straddle the loop we just made; only a bounded
+        # neighbourhood can be affected by this edit.
+        i = max(0, i - 2 * max_block)
     return tokens, loops
-
 
 def _macro_savings(body: list[str], count: int) -> int:
     body_len = _text_len(body)
@@ -130,24 +143,34 @@ def _macro_savings(body: list[str], count: int) -> int:
 def find_macros(tracks: list[list[str]], limit: int = 26) -> tuple[list[tuple[str, list[str]]], int]:
     """Greedy repeated-phrase macros shared by all tracks."""
     candidates: dict[tuple[str, ...], int] = {}
-    lengths = (2, 3, 4, 6, 8, 12, 16, 24, 32)
+    # Very short macro bodies cost more to define than they save.  The user
+    # convention is at least four MML commands per macro.
+    lengths = (4, 6, 8, 12, 16, 24, 32)
     for tokens in tracks:
         n = len(tokens)
+        clean = not any(_is_control_token(token) for token in tokens)
         for size in lengths:
             if size > n:
                 continue
-            for i in range(0, n - size + 1):
+            i = 0
+            while i + size <= n:
                 body = tuple(tokens[i : i + size])
-                if _has_control(body) or not _balanced_loops(list(body)):
-                    continue
-                if body[0] in ("&", "&&", "*"):
-                    continue
-                if any(len(t) == 1 and "A" <= t <= "Z" for t in body):
-                    continue
-                candidates[body] = candidates.get(body, 0) + 1
+                valid = (
+                    (clean or not _has_control(body))
+                    and _balanced_loops(list(body))
+                    and body[0] not in ("&", "&&", "*")
+                    and not any(len(t) == 1 and "A" <= t <= "Z" for t in body)
+                )
+                if valid:
+                    # Count non-overlapping occurrences, matching what the
+                    # replacement pass can actually save.
+                    candidates[body] = candidates.get(body, 0) + 1
+                    i += size
+                else:
+                    i += 1
     ranked = []
     for body, count in candidates.items():
-        if count < 2:
+        if count <= 10 or len(body) < 4:
             continue
         saving = _macro_savings(list(body), count)
         if saving > 5:

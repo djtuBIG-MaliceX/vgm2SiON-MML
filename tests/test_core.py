@@ -89,6 +89,19 @@ class MmlTests(unittest.TestCase):
         self.assertIn("#OPM@0{", text)
         self.assertLess(text.index("#OPM@0{"), text.index("%6"))
 
+    def test_tempo_is_repeated_on_every_track(self):
+        voices = VoiceLibrary()
+        voice = FmVoice("opm", 7, 0, ((1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0),) * 4)
+        tracks = [
+            Track("a", 6, "fm", _timeline(voice), order=0),
+            Track("b", 6, "fm", _timeline(voice), order=1),
+        ]
+        song = Song("T", tracks, voices, 44100, bpm=102)
+        text = render_song(song)
+        track_lines = [line for line in text.splitlines() if line.startswith("%")]
+        self.assertEqual(len(track_lines), 2)
+        self.assertTrue(all("t102" in line for line in track_lines), track_lines)
+
     def test_loop_marker_and_valid_body(self):
         voices = VoiceLibrary()
         voice = FmVoice("opm", 7, 0, ((1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0),) * 4)
@@ -192,6 +205,65 @@ class ExtractorTests(unittest.TestCase):
         note = _only_note(vgm, "opl")
         self.assertEqual(len(note.voice.ops), 4)
         self.assertAlmostEqual(note.pitch / 64.0, 69.0, places=2)
+
+    def test_opll_a4_and_factory_preset(self):
+        cmds = bytearray()
+        cmds += synth.ym2413(0x30, 0x10)
+        cmds += synth.ym2413(0x10, 0x21)
+        cmds += synth.ym2413(0x20, 0x19)
+        cmds += synth.wait(44100) + synth.ym2413(0x20, 0x09)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x10: 3579545})))
+        result = convert_vgm(vgm)
+        self.assertEqual(result.notes, 1)
+        note = _only_note(vgm, "opll")
+        self.assertEqual(len(note.voice.ops), 2)
+        self.assertAlmostEqual(note.pitch / 64.0, 69.0, delta=0.1)
+        self.assertIn("#OPL@", result.text)
+        # OPLL factory preset 1 (Violin) from libvgm's default bank.
+        self.assertEqual(
+            note.voice.ops,
+            (
+                (0, 13, 0, 0, 1, 0, 30, 1, 0, 1, 0),
+                (1, 7, 8, 7, 1, 1, 0, 0, 0, 1, 0),
+            ),
+        )
+
+    def test_vrc7_flag_selects_bank_and_six_channels(self):
+        cmds = bytearray()
+        cmds += synth.ym2413(0x30, 0x10)
+        cmds += synth.ym2413(0x10, 0x21)
+        cmds += synth.ym2413(0x20, 0x19)
+        cmds += synth.wait(44100) + synth.ym2413(0x20, 0x09)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(
+            bytes(cmds), 44100, raw_clocks={0x10: 3579545 | 0x80000000},
+        )))
+        self.assertEqual(vgm.chip_flags.get("ym2413_vrc7"), 1)
+        result = convert_vgm(vgm)
+        self.assertEqual(result.notes, 1)
+        self.assertIn("VRC7", result.text)
+        self.assertIn("VRC7 1 ch 1", result.text)
+        note = _only_note(vgm, "opll")
+        # VRC7 preset 1 (Violin) is a different factory bank from OPLL's.
+        self.assertEqual(
+            note.voice.ops,
+            (
+                (0, 14, 8, 2, 0, 4, 5, 0, 0, 3, 0),
+                (0, 8, 1, 7, 1, 2, 0, 0, 0, 1, 0),
+            ),
+        )
+
+    def test_opll_rhythm_bd_track(self):
+        cmds = bytearray()
+        cmds += synth.ym2413(0x0E, 0x20)
+        cmds += synth.ym2413(0x16, 0x21)
+        cmds += synth.ym2413(0x26, 0x1B)
+        cmds += synth.ym2413(0x36, 0)
+        cmds += synth.ym2413(0x0E, 0x30)
+        cmds += synth.wait(44100) + synth.ym2413(0x0E, 0x20)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 44100, clocks={0x10: 3579545})))
+        result = convert_vgm(vgm)
+        self.assertEqual(result.stats["ym2413_0"]["drums"], 1)
+        self.assertIn("YM2413 1 BD", result.text)
 
     def test_ay_a4(self):
         cmds = bytearray()
@@ -402,9 +474,33 @@ class ExtractorTests(unittest.TestCase):
         from vgm2sionmml.model import VoiceLibrary
         from vgm2sionmml.chips import extract_opl
         result = extract_opl(vgm, VoiceLibrary(), "ymf262")
-        drums = [t for t in result.tracks if t.label.endswith(" BD")]
+        # The bass drum is normal FM channel 6 (one-based channel 7), not a
+        # separate one-operator drum track.
+        drums = [t for t in result.tracks if t.label.endswith("ch 7")]
         self.assertEqual(len(drums), 1)
         self.assertEqual(len(drums[0].timeline.notes), 2)
+
+    def test_opl_rhythm_linked_pitch_changes(self):
+        cmds = bytearray()
+        cmds += synth.ymf262(0, 0xBD, 0x20)
+        for reg, val in (
+            (0x11, 0x21), (0x14, 0x21),
+            (0x51, 0), (0x54, 0), (0x71, 0xF0), (0x74, 0xF0),
+            (0x91, 0), (0x94, 0), (0xA7, 0x44), (0xB7, 0x12),
+            (0xC7, 0x30),
+        ):
+            cmds += synth.ymf262(0, reg, val)
+        cmds += synth.ymf262(0, 0xBD, 0x28) + synth.wait(1000)
+        cmds += synth.ymf262(0, 0xA7, 0x54) + synth.ymf262(0, 0xB7, 0x12)
+        cmds += synth.wait(1000)
+        vgm = load_vgm(self._tmp_vgm(synth.make_vgm(bytes(cmds), 2000, clocks={0x5C: 14318180})))
+        from vgm2sionmml.chips import extract_opl
+        result = extract_opl(vgm, VoiceLibrary(), "ymf262")
+        sd = [t for t in result.tracks if t.label.endswith(" SD")]
+        self.assertEqual(len(sd), 1)
+        note = sd[0].timeline.notes[0]
+        self.assertTrue(note.pitch_points)
+        self.assertNotEqual(note.pitch_points[-1][1], note.pitch)
 
     def test_opl_tl_change_becomes_gain(self):
         cmds = bytearray()
@@ -453,6 +549,7 @@ def _only_note(vgm, family: str):
         extract_ay8910,
         extract_nes,
         extract_opl,
+        extract_opll,
         extract_opn,
         extract_sn76489,
         extract_ym2151,
@@ -467,6 +564,8 @@ def _only_note(vgm, family: str):
     elif family == "opl":
         kind = "ym3812" if any(w.chip == "ym3812" for w in vgm.writes) else "ymf262"
         result = extract_opl(vgm, voices, kind)
+    elif family == "opll":
+        result = extract_opll(vgm, voices)
     elif family == "ay":
         result = extract_ay8910(vgm, voices)
     elif family == "sn":
@@ -482,6 +581,26 @@ def _only_note(vgm, family: str):
 
 class CompileTests(unittest.TestCase):
     """End-to-end: generated MML must compile in the reference SiON player."""
+
+    @unittest.skipUnless(synth.sion_play_available(), "sion-play not available")
+    def test_opll_output_compiles(self):
+        cmds = bytearray()
+        cmds += synth.ym2413(0x30, 0x10)
+        cmds += synth.ym2413(0x10, 0x21)
+        cmds += synth.ym2413(0x20, 0x1B)
+        cmds += synth.ym2413(0x0E, 0x20)
+        cmds += synth.ym2413(0x16, 0x21)
+        cmds += synth.ym2413(0x26, 0x1B)
+        cmds += synth.ym2413(0x36, 0)
+        cmds += synth.ym2413(0x0E, 0x30)
+        cmds += synth.wait(44100)
+        cmds += synth.ym2413(0x20, 0x0B) + synth.ym2413(0x0E, 0x20)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "x.vgm"
+            path.write_bytes(synth.make_vgm(bytes(cmds), 44100, clocks={0x10: 3579545}))
+            result = convert_vgm(load_vgm(path))
+            wav = synth.compile_mml(result.text, Path(td))
+            self.assertTrue(synth.wav_has_signal(wav))
 
     @unittest.skipUnless(synth.sion_play_available(), "sion-play not available")
     def test_opm_output_compiles(self):
