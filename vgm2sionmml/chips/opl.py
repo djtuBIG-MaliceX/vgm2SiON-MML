@@ -3,9 +3,10 @@
 Two-operator channels map to ``#OPL@`` voices with two operators.  OPL3's
 four-operator pairs (0,3), (1,4), (2,5) per bank map to a four-operator voice
 in the instrument order used by libSiON: [head op1, second op1, head op2,
-second op2].  Rhythm mode is converted as one-shot drums; the SD and TC
-single-operator voices use SiON's @r cross-channel ring modulation to restore
-their noisy transient.
+second op2].  Rhythm mode is converted as one-shot drums.  For SD, HH and
+TC, the operators involved at note-on are captured and rebuilt as a per-hit
+two-operator OPL ring source, which drives SiON's @r cross-channel modulation.
+A shared square-wave ring layer supplies the pitched body.
 """
 
 from __future__ import annotations
@@ -67,27 +68,45 @@ DRUMS = {
     0x02: ("TC", 8, 0x15, 8820),
     0x01: ("HH", 7, 0x11, 4410),
 }
-# SiON's @r ring modulation is a cross-channel effect.  The OPL rhythm
-# operators are single sines whose real chip phase switches at audio rate;
-# multiplying them by a shared white-noise bus gives the missing noisy
-# transient.  Level 2 keeps the effect below the noise bus's clipping point,
-# and the ring notes are scaled so SD/TC stay near the dry drum level.
-RHYTHM_RING_BITS = (0x08, 0x02)
+# SiON's @r ring modulation is a cross-channel effect.  At each rhythm
+# trigger the involved OPL operators are captured and rebuilt as a per-hit
+# two-operator instrument; that instrument is the ring source for the drum's
+# one-operator envelope carrier.
+RHYTHM_RING_BITS = (0x08, 0x02, 0x01)
 RHYTHM_RING_LEVEL = 2
-RHYTHM_RING_GAIN = 0.25
-# TC's real top-cymbal operator is a bright sine with fast phase changes.
-# A bright two-operator OPL modulator gives SiON a closer metallic ring than
-# broadband noise while still being an ordinary OPL voice.
-TC_RING_VOICE = FmVoice(
-    "opl",
-    0,
-    7,
-    (
-        (3, 15, 0, 0, 1, 0, 0, 0, 0, 15, 0),
-        (1, 15, 0, 0, 1, 0, 0, 0, 0, 1, 0),
-    ),
-)
-SD_RING_VOICE = SimpleVoice(5, 6, "ring noise")
+RHYTHM_RING_GAIN = {0x08: 0.25, 0x02: 0.18, 0x01: 0.16}
+RHYTHM_RING_FEEDBACK = 7
+# An additional square-wave ring layer supplies the pitched body that the
+# noise-like phase interaction alone lacks.  It is intentionally shared: the
+# drum gates, not the source, decide when it is heard.
+RHYTHM_SQUARE_LEVEL = 2
+RHYTHM_SQUARE_GAIN = {0x08: 0.18, 0x02: 0.09, 0x01: 0.08}
+# Drum -> (phase source slot, carrier slot, modulator TL).  The source and
+# carrier operators are captured at note-on and rebuilt as a two-operator OPL
+# instrument; the TL values are the rhythmic modulation-depth interpretation
+# because the phase source has no audible level of its own.
+RHYTHM_RING_SPECS = {
+    0x08: (0x11, 0x14, 8),   # snare
+    0x02: (0x11, 0x15, 13),  # top cymbal
+    0x01: (0x15, 0x11, 16),  # hi-hat
+}
+
+
+def _ring_operator(op: tuple[int, ...], tl: int) -> tuple[int, ...]:
+    """Keep an operator's oscillator fields, but normalize its amplitude."""
+    return (op[0], 15, 0, 0, 1, 0, tl, op[7], op[8], op[9], 0)
+
+
+def _ring_voice(
+    source_op: tuple[int, ...], carrier_op: tuple[int, ...], source_tl: int
+) -> FmVoice:
+    """A per-hit two-operator instrument interpreting the phase interaction."""
+    return FmVoice(
+        "opl",
+        0,
+        RHYTHM_RING_FEEDBACK,
+        (_ring_operator(source_op, source_tl), _ring_operator(carrier_op, 0)),
+    )
 
 
 @dataclass
@@ -506,6 +525,11 @@ def extract_opl(
             for bit, (name, _ch, _slot, _dur) in DRUMS.items()
         }
         drum_tracks: dict[int, Track] = {}
+        ring_timelines = {
+            bit: ChannelTimeline(f"{kind.upper()} {instance + 1} {DRUMS[bit][0]} ring")
+            for bit in RHYTHM_RING_BITS
+        }
+        ring_voice_cache: dict[FmVoice, FmVoice] = {}
         last_drum_sample = {bit: -1 for bit in DRUMS}
         # Rhythm drum notes share pitch registers with their linked FM
         # channels.  Keep them here so A0/B0 writes after the trigger retune
@@ -610,11 +634,7 @@ def extract_opl(
                                     pitch,
                                     voice,
                                     gain=pan_gain
-                                    * (
-                                        RHYTHM_RING_GAIN
-                                        if bit in RHYTHM_RING_BITS
-                                        else 1.0
-                                    ),
+                                    * RHYTHM_RING_GAIN.get(bit, 1.0),
                                     pan=pan,
                                 )
                                 active_drums[ch6].append(note)
@@ -622,6 +642,27 @@ def extract_opl(
                             _apply_opl_auto_release(
                                 note, 0, voice.ops, clock, sample
                             )
+                            if bit in RHYTHM_RING_SPECS:
+                                source_slot, carrier_slot, source_tl = (
+                                    RHYTHM_RING_SPECS[bit]
+                                )
+                                source_voice = _ring_voice(
+                                    state._op_params(bank_hi | source_slot),
+                                    state._op_params(bank_hi | carrier_slot),
+                                    source_tl,
+                                )
+                                source_voice = ring_voice_cache.setdefault(
+                                    source_voice, source_voice
+                                )
+                                source_ch = 7 if source_slot == 0x11 else 8
+                                source_note = ring_timelines[bit].note_on(
+                                    sample,
+                                    state.pitch_units(source_ch, clock),
+                                    source_voice,
+                                    gain=1.0,
+                                    pan=4.0,
+                                )
+                                source_note.end = note.end
                             stats["drum_notes"] = stats.get("drum_notes", 0) + 1
                             if bit in RHYTHM_RING_BITS:
                                 stats["ring_mod_notes"] = (
@@ -763,6 +804,8 @@ def extract_opl(
             timelines[ch].close_all(vgm.total_samples)
         for tl in drum_timelines.values():
             tl.close_all(vgm.total_samples)
+        for tl in ring_timelines.values():
+            tl.close_all(vgm.total_samples)
         for ch, tl in enumerate(timelines):
             if tl.notes:
                 result.tracks.append(
@@ -785,52 +828,82 @@ def extract_opl(
                 )
                 drum_tracks[bit] = track
                 result.tracks.append(track)
-        ring_sources = {
-            0x08: (SD_RING_VOICE, 5, "psg", "SD ring"),
-            0x02: (TC_RING_VOICE, 6, "fm", "TC ring"),
-        }
         for index, bit in enumerate(RHYTHM_RING_BITS):
-            if bit not in drum_tracks or not drum_tracks[bit].timeline.notes:
+            source_timeline = ring_timelines[bit]
+            if not source_timeline.notes:
                 continue
-            voice, module, track_kind, source_name = ring_sources[bit]
-            pipe = (instance * 2 + index) % 4
-            drum_tracks[bit].ring_mod = (RHYTHM_RING_LEVEL, pipe)
-            source_timeline = ChannelTimeline(
-                f"{kind.upper()} {instance + 1} {source_name}"
-            )
-            loop_sample = vgm.loop_sample
-            if loop_sample is not None and 0 < loop_sample < vgm.total_samples:
-                first = source_timeline.note_on(
-                    0, midi_to_units(60), voice, gain=1.0, pan=4.0
-                )
-                first.end = loop_sample
-                second = source_timeline.note_on(
-                    loop_sample, midi_to_units(60), voice, gain=1.0, pan=4.0
-                )
-                second.end = vgm.total_samples
-            else:
-                source_note = source_timeline.note_on(
-                    0, midi_to_units(60), voice, gain=1.0, pan=4.0
-                )
-                source_note.end = vgm.total_samples
+            pipe = (instance * len(RHYTHM_RING_BITS) + index) % 4
+            if bit in drum_tracks:
+                drum_tracks[bit].ring_mod = (RHYTHM_RING_LEVEL, pipe)
             result.tracks.append(
                 Track(
                     label=source_timeline.label,
-                    module=module,
-                    kind=track_kind,
+                    module=6,
+                    kind="fm",
                     timeline=source_timeline,
-                    default_voice=voice,
                     output_pipe=pipe,
                     order=order_base - 1 - index,
                 )
             )
             stats["ring_sources"] = stats.get("ring_sources", 0) + 1
 
+        square_tracks = [
+            drum_tracks[bit]
+            for bit in RHYTHM_RING_BITS
+            if bit in drum_tracks and drum_tracks[bit].timeline.notes
+        ]
+        if square_tracks:
+            square_voice = SimpleVoice(5, 0, "square ring")
+            square_timeline = ChannelTimeline(
+                f"{kind.upper()} {instance + 1} square ring"
+            )
+            loop_sample = vgm.loop_sample
+            if loop_sample is not None and 0 < loop_sample < vgm.total_samples:
+                first = square_timeline.note_on(
+                    0, midi_to_units(60), square_voice, gain=1.0, pan=4.0
+                )
+                first.end = loop_sample
+                second = square_timeline.note_on(
+                    loop_sample, midi_to_units(60), square_voice, gain=1.0, pan=4.0
+                )
+                second.end = vgm.total_samples
+            else:
+                square_note = square_timeline.note_on(
+                    0, midi_to_units(60), square_voice, gain=1.0, pan=4.0
+                )
+                square_note.end = vgm.total_samples
+            result.tracks.append(
+                Track(
+                    label=square_timeline.label,
+                    module=5,
+                    kind="psg",
+                    timeline=square_timeline,
+                    default_voice=square_voice,
+                    output_pipe=3,
+                    order=order_base - 10,
+                )
+            )
+            stats["square_ring_sources"] = stats.get("square_ring_sources", 0) + 1
+            for bit in RHYTHM_RING_BITS:
+                original = drum_tracks.get(bit)
+                if original is None or not original.timeline.notes:
+                    continue
+                square = copy.deepcopy(original)
+                square.label = original.label + " square"
+                square.order = original.order + 0.5
+                square.ring_mod = (RHYTHM_SQUARE_LEVEL, 3)
+                gain_ratio = (
+                    RHYTHM_SQUARE_GAIN[bit] / RHYTHM_RING_GAIN[bit]
+                )
+                for note in square.timeline.notes:
+                    note.gain *= gain_ratio
+                result.tracks.append(square)
+
     if rhythm_seen:
         result.warnings.append(
             "OPL rhythm mode converted with normal FM channel 6 for the "
             "bass drum, linked-channel pitch tracking for drums, and @r "
-            "ring modulation for snare/top cymbal; decay is approximate"
+            "ring modulation for snare/hi-hat/top cymbal and a square body layer; decay is approximate"
         )
     result.stats.update(stats)
     return result

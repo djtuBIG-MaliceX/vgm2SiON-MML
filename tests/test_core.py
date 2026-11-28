@@ -736,7 +736,7 @@ class ExtractorTests(unittest.TestCase):
             (0xA8, 0x65), (0xB8, 0x12),
         ):
             cmds += synth.ymf262(0, reg, val)
-        cmds += synth.ymf262(0, 0xBD, 0x2A) + synth.wait(1000)
+        cmds += synth.ymf262(0, 0xBD, 0x2B) + synth.wait(1000)
         vgm = load_vgm(
             self._tmp_vgm(
                 synth.make_vgm(
@@ -752,30 +752,40 @@ class ExtractorTests(unittest.TestCase):
         result = extract_opl(vgm, VoiceLibrary(), "ymf262")
         sd = next(t for t in result.tracks if t.label.endswith(" SD"))
         tc = next(t for t in result.tracks if t.label.endswith(" TC"))
+        hh = next(t for t in result.tracks if t.label.endswith(" HH"))
         sd_ring = next(t for t in result.tracks if "SD ring" in t.label)
         tc_ring = next(t for t in result.tracks if "TC ring" in t.label)
+        hh_ring = next(t for t in result.tracks if "HH ring" in t.label)
+        square_source = next(t for t in result.tracks if "square ring" in t.label)
+        sd_square = next(t for t in result.tracks if "SD square" in t.label)
+        hh_square = next(t for t in result.tracks if "HH square" in t.label)
         self.assertEqual(sd.ring_mod, (2, 0))
         self.assertEqual(tc.ring_mod, (2, 1))
-        self.assertEqual(sd_ring.module, 5)
-        self.assertEqual(sd_ring.output_pipe, 0)
-        self.assertEqual(sd_ring.default_voice.wave, 6)
-        self.assertEqual(tc_ring.module, 6)
-        self.assertEqual(tc_ring.output_pipe, 1)
-        self.assertEqual(tc_ring.default_voice.family, "opl")
-        # Each source has an intro and loop body so ring modulation does not
-        # disappear after `$`.
-        self.assertEqual(len(sd_ring.timeline.notes), 2)
-        self.assertEqual(len(tc_ring.timeline.notes), 2)
+        self.assertEqual(hh.ring_mod, (2, 2))
+        for track, pipe in ((sd_ring, 0), (tc_ring, 1), (hh_ring, 2)):
+            self.assertEqual(track.module, 6)
+            self.assertEqual(track.output_pipe, pipe)
+            self.assertEqual(track.timeline.notes[0].voice.family, "opl")
+            # The source is emitted at the same trigger times as the drum.
+            self.assertTrue(track.timeline.notes)
+        self.assertEqual(square_source.module, 5)
+        self.assertEqual(square_source.output_pipe, 3)
+        self.assertEqual(square_source.default_voice.wave, 0)
+        self.assertEqual(sd_square.ring_mod, (2, 3))
+        self.assertEqual(hh_square.ring_mod, (2, 3))
 
         converted = convert_vgm(vgm)
-        self.assertIn("@r2,0", converted.text)
-        self.assertIn("@r2,1", converted.text)
-        self.assertIn("@o1,0", converted.text)
-        self.assertIn("@o1,1", converted.text)
+        for token in ("@r2,0", "@r2,1", "@r2,2", "@r2,3"):
+            self.assertIn(token, converted.text)
+        for token in ("@o1,0", "@o1,1", "@o1,2", "@o1,3"):
+            self.assertIn(token, converted.text)
         self.assertEqual(
-            converted.stats["ymf262_0"]["ring_mod_notes"], 2
+            converted.stats["ymf262_0"]["ring_mod_notes"], 3
         )
-        self.assertEqual(converted.stats["ymf262_0"]["ring_sources"], 2)
+        self.assertEqual(converted.stats["ymf262_0"]["ring_sources"], 3)
+        self.assertEqual(
+            converted.stats["ymf262_0"]["square_ring_sources"], 1
+        )
 
     def test_sn_gg_stereo(self):
         cmds = bytearray([0x4F, 0x10]) + bytearray([0x50, 0x8E, 0x50, 0x0F, 0x50, 0x90])
