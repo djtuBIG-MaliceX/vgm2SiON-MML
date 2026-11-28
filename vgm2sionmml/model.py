@@ -390,6 +390,9 @@ class Track:
     default_voice: FmVoice | SimpleVoice | None = None
     lfo_points: list[tuple[int, LfoState]] = field(default_factory=list)
     order: int = 0
+    # ``@o`` output routing and ``@r`` cross-channel ring modulation.
+    output_pipe: int | None = None
+    ring_mod: tuple[int, int] | None = None
 
     def lfo_at(self, sample: int) -> LfoState | None:
         current = None

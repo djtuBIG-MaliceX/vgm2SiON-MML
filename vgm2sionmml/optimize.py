@@ -39,6 +39,8 @@ def _is_control_token(token: str) -> bool:
         or token.startswith("t")
         or token.startswith("#")
         or token.endswith(";")
+        or token.startswith("@o")
+        or token.startswith("@r")
     )
 
 

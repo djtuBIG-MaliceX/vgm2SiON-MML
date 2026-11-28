@@ -697,6 +697,86 @@ class ExtractorTests(unittest.TestCase):
         self.assertTrue(note.gain_points)
         self.assertLess(note.gain_points[-1][1], note.gain)
 
+    def test_opl_rhythm_tc_and_tom_operator_slots(self):
+        cmds = bytearray()
+        cmds += synth.ymf262(0, 0xBD, 0x20)
+        for reg, val in (
+            (0x32, 0x10), (0x35, 0x28),
+            (0x52, 0x10), (0x55, 0x28),
+            (0x72, 0xF0), (0x75, 0xF0),
+            (0x92, 0xB5), (0x95, 0xB5),
+            (0xA8, 0x65), (0xB8, 0x12), (0xC8, 0x30),
+        ):
+            cmds += synth.ymf262(0, reg, val)
+        cmds += synth.ymf262(0, 0xBD, 0x26) + synth.wait(1000)
+        vgm = load_vgm(
+            self._tmp_vgm(
+                synth.make_vgm(
+                    bytes(cmds), 2000, clocks={0x5C: 14318180}
+                )
+            )
+        )
+        from vgm2sionmml.chips import extract_opl
+
+        result = extract_opl(vgm, VoiceLibrary(), "ymf262")
+        tc = next(t for t in result.tracks if t.label.endswith(" TC"))
+        tom = next(t for t in result.tracks if t.label.endswith(" TOM"))
+        self.assertEqual(tc.timeline.notes[0].voice.ops[0][6], 0x28)
+        self.assertEqual(tom.timeline.notes[0].voice.ops[0][6], 0x10)
+
+    def test_opl_rhythm_sd_tc_ring_modulation(self):
+        cmds = bytearray()
+        cmds += synth.ymf262(0, 0xBD, 0x20)
+        for reg, val in (
+            (0x31, 0x21), (0x34, 0x21), (0x35, 0x21),
+            (0x51, 0x00), (0x54, 0x00), (0x55, 0x00),
+            (0x71, 0xF0), (0x74, 0xF0), (0x75, 0xF0),
+            (0x91, 0x00), (0x94, 0x00), (0x95, 0x00),
+            (0xA7, 0x44), (0xB7, 0x12),
+            (0xA8, 0x65), (0xB8, 0x12),
+        ):
+            cmds += synth.ymf262(0, reg, val)
+        cmds += synth.ymf262(0, 0xBD, 0x2A) + synth.wait(1000)
+        vgm = load_vgm(
+            self._tmp_vgm(
+                synth.make_vgm(
+                    bytes(cmds),
+                    2000,
+                    clocks={0x5C: 14318180},
+                )
+            )
+        )
+        vgm.loop_sample = 1000
+        from vgm2sionmml.chips import extract_opl
+
+        result = extract_opl(vgm, VoiceLibrary(), "ymf262")
+        sd = next(t for t in result.tracks if t.label.endswith(" SD"))
+        tc = next(t for t in result.tracks if t.label.endswith(" TC"))
+        sd_ring = next(t for t in result.tracks if "SD ring" in t.label)
+        tc_ring = next(t for t in result.tracks if "TC ring" in t.label)
+        self.assertEqual(sd.ring_mod, (2, 0))
+        self.assertEqual(tc.ring_mod, (2, 1))
+        self.assertEqual(sd_ring.module, 5)
+        self.assertEqual(sd_ring.output_pipe, 0)
+        self.assertEqual(sd_ring.default_voice.wave, 6)
+        self.assertEqual(tc_ring.module, 6)
+        self.assertEqual(tc_ring.output_pipe, 1)
+        self.assertEqual(tc_ring.default_voice.family, "opl")
+        # Each source has an intro and loop body so ring modulation does not
+        # disappear after `$`.
+        self.assertEqual(len(sd_ring.timeline.notes), 2)
+        self.assertEqual(len(tc_ring.timeline.notes), 2)
+
+        converted = convert_vgm(vgm)
+        self.assertIn("@r2,0", converted.text)
+        self.assertIn("@r2,1", converted.text)
+        self.assertIn("@o1,0", converted.text)
+        self.assertIn("@o1,1", converted.text)
+        self.assertEqual(
+            converted.stats["ymf262_0"]["ring_mod_notes"], 2
+        )
+        self.assertEqual(converted.stats["ymf262_0"]["ring_sources"], 2)
+
     def test_sn_gg_stereo(self):
         cmds = bytearray([0x4F, 0x10]) + bytearray([0x50, 0x8E, 0x50, 0x0F, 0x50, 0x90])
         cmds += synth.wait(44100) + bytes([0x50, 0x9F])

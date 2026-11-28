@@ -258,6 +258,11 @@ class MmlRenderer:
 
     def _track_init(self, track: Track, include_tempo: bool) -> list[str]:
         tokens = [f"%{track.module}"]
+        if track.output_pipe is not None:
+            tokens.append(f"@o1,{track.output_pipe}")
+        if track.ring_mod is not None:
+            level, pipe = track.ring_mod
+            tokens.append(f"@r{level},{pipe}")
         if include_tempo:
             tokens.append(f"t{self.song.bpm}")
         tokens.extend(["q8", "v16"])

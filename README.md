@@ -123,12 +123,15 @@ Example output:
 * **OPL**: OPL1/OPL2/OPL3 two-operator voices map to two-operator `#OPL@`
   voices. OPL3's per-pair 0x104 enable bits drive 4-op voices in physical
   chain order `[head op1, head op2, second op1, second op2]`. OPL rhythm mode
-  becomes five one-shot drum tracks using the chip's rhythm operators.
-  For percussive operators (ET=0), the extractor also computes the
-  attack/decay/release frames from the OPL envelope-rate tables and caps the
-  note at the point where the carrier envelope can reach silence; players
-  that do not auto-release the S phase therefore do not hold the note too
-  long.
+  becomes five one-shot drum tracks using the chip's rhythm operators. The
+  snare and top-cymbal operators use SiON's `@r` cross-channel ring
+  modulation: the snare is multiplied by a white-noise source and the top
+  cymbal by a bright OPL voice, approximating the real chip's audio-rate
+  phase switching. For percussive operators (ET=0), the
+  extractor also computes the attack/decay/release frames from the OPL
+  envelope-rate tables and caps the note at the point where the carrier
+  envelope can reach silence; players that do not auto-release the S phase
+  therefore do not hold the note too long.
 * **OPLL/VRC7**: a YM2413 clock word with bit 31 set selects Konami's VRC7
   preset bank and six channels; otherwise the chip uses the standard 19-entry
   OPLL bank and nine channels. Preset 0 reads the custom `$00`-`$07` patch.
@@ -211,9 +214,11 @@ Set `SION_PLAY` to point at a `sion-play` executable if it is not at
 * **OPN channel-3 special mode** is skipped because its four operators have
   independent pitches, which the `#OPN@` voice model cannot express.
 * **OPL/OPLL rhythm** pitch and decay are approximations; the five drum tracks
-  use the chip's rhythm operators and one-shot note lengths. OPLL rhythm
-  channel registers are linked, so the drum pitch tracks the linked hardware
-  channel rather than independent drum tuning.
+  use the chip's rhythm operators and one-shot note lengths. OPL SD uses a
+  white-noise `@r` ring source and TC a bright OPL voice rather than the
+  chip's exact phase switching. OPLL rhythm channel registers are linked, so
+  the drum pitch tracks the linked hardware channel rather than independent
+  drum tuning.
 * **NES sweep** is ignored, and the envelope/length simulation is an
   approximation rather than cycle-exact APU emulation.
 * **AY/SN noise** is approximated with SiON's pulse/periodic noise voices.
